@@ -1,6 +1,6 @@
 # Qwen Image 2.1 Prompt Rewrite for ComfyUI
 
-[ComfyUI Registry publisher: t8star](https://registry.comfy.org/) · [GGUF 模型镜像 / GGUF model mirror](https://huggingface.co/t8star/qwen-image-2.1-comfy)
+[ComfyUI Registry 节点 / Registry node](https://registry.comfy.org/zh/publishers/t8star/nodes/qwen-image-prompt-rewrite-t8) · [GGUF 模型镜像 / GGUF model mirror](https://huggingface.co/t8star/qwen-image-2.1-comfy)
 
 一个入口处理纯文字文生图提示词和带 1–10 张参考图的编辑提示词。`auto` 根据是否连接图片选择 T2I 或 I2I 权重，分别使用 Qwen Image 2.1 官方系统提示词模板。节点运行本地 llama.cpp；默认每次改写结束即卸载模型，也可暂时保持加载并用独立卸载节点释放。
 
@@ -8,7 +8,7 @@
 
 ## 安装
 
-1. 将本目录放进 `ComfyUI/custom_nodes/`，或为它建立目录联接，然后重启 ComfyUI。
+1. 在 ComfyUI Manager 搜索 `qwen-image-prompt-rewrite-t8` 并安装；也可运行 `comfy node install qwen-image-prompt-rewrite-t8`，或把本仓库放进 `ComfyUI/custom_nodes/`。然后重启 ComfyUI。
 2. 在本目录运行 `python tools/download_models.py`。下载器将三个 Q4_K_M 主模型及 I2I 的 BF16 视觉组件放入 `models/llm/qwenimage-pe/`，对现有文件按大小和 SHA256 校验，对中断下载续传。视觉组件的发布仓库没有 Q4 文件。
 3. Windows 上运行 `powershell -ExecutionPolicy Bypass -File tools/download_runtime.ps1`，获取官方 llama.cpp b11068 CUDA 12.4 发行包。其他平台可自行安装兼容的 `llama-server`，并将其可执行文件路径设置为环境变量 `QWEN_PE_LLAMA_SERVER`。
 4. ComfyUI 的 Python 环境须已有 `torch`、`numpy`、`Pillow`。启动后在“Qwen Image 2.1 / Prompt Rewrite”分类查找节点。
