@@ -20,11 +20,13 @@
 ## 节点与工作流
 
 - **PE Rewrite T8**：输入文字、任务类型、画幅比例、输出语言、透明图开关、T2I 与编辑模型、视觉组件、卸载策略、种子，以及按顺序连接的 `image_1` 至 `image_10`。比例可选 `auto`、`1:1`、`1:2`、`2:3`、`3:4`、`4:5`、`16:9`、`21:9`、`9:21`、`5:4`、`4:3`、`2:1`；语言可选 `auto`、`中文`、`English`。`auto` 任务在无图时调用 T2I，有图时调用 I2I。必须从 `image_1` 连续连接，每个端口只接一张图，不接批次。输出改写文字、结构化 `PE_RESULT` 和诊断信息。
-- **PE Canvas T8**：读取 `wh_ratio` 或 `ratio_follow`，输出宽、高、Qwen 64 通道空 latent 和比例来源。`ratio_follow=<imageN>` 可按指定参考图的原始尺寸建画布；关闭 `follow_input_size` 后保留比例并按 `resolution` 缩放。
+- **PE Canvas T8**：读取 `wh_ratio` 或 `ratio_follow`，输出宽、高、Qwen 64 通道空 latent 和比例来源。`ratio_follow=<imageN>` 在 `follow_input_size` 开启时沿用参考图尺寸；大图会保持比例缩至 `resolution²` 像素预算和 4096 像素边长上限。关闭 `follow_input_size` 后只沿用比例，并按同一预算计算画布。
 - **PE Unload T8**：在 `keep_loaded` 模式下显式终止本节点启动的模型服务。
 - **PE Local Models T8**：列出当前发现的主模型与视觉文件。`Qwen-PE-2.1-Local-Models-Demo.json` 已将它接到 `PreviewAny`，可在 UI 中检查。
 
 `workflows/Qwen-PE-2.1-Text-to-Image-Ready.json` 是纯文字可运行示例；`workflows/Qwen-PE-2.1-Edit-2-Images-Demo.json` 和 `workflows/Qwen-PE-2.1-Edit-10-Images-Demo.json` 使用 ComfyUI `EmptyImage` 生成色彩图，可直接验证多图视觉链路；`workflows/Qwen-PE-2.1-Edit-2-Images-Ready.json` 使用两个 `LoadImage`，导入后请分别选择自己的图片。另外提供英文透明图、强制中文输出、中文透明图和保留加载后显式卸载示例。将 JSON 拖入 ComfyUI 画布，或放入 `user/default/workflows/` 后从工作流栏打开。
+
+仓库维护者若要运行 `tools/build_workflows.py` 或 `tools/build_downstream_workflows.py` 重新生成这些 JSON，须先将环境变量 `QWEN_PE_COMFY_DIR` 指向本机 ComfyUI 目录；后者如未使用整合包，还需通过 `QWEN_PE_QWEN_TEMPLATE` 指定官方 Qwen Image 2.1 工作流模板。
 
 目录还提供六个**完整出图工作流**：标准 T2I、Heretic T2I、双图编辑、十图编辑、英文透明 T2I 和中文透明 T2I，文件名均以 `Qwen-PE-2.1-Full-` 开头。它们把改写提示词和同一组参考图接入新版 ComfyUI 的 `TextEncodeQwenImage21`，将 PE Canvas 的 latent 接入采样器，再由 VAE 解码并保存 PNG；预览节点同时显示最终提示词、画幅来源和诊断。双图示例附带 `workflows/fixtures/` 中的两张测试图；导入别的 ComfyUI 时，请把图片复制到其 `input/` 目录或在两个 `LoadImage` 节点重新选图。十图示例用内置 `EmptyImage` 色块生成十张参考图，无需额外素材，两个模型节点接收完全相同的图序。完整出图工作流以 512 像素、12 步作为快速验收参数，正式出图可提高分辨率和采样步数。
 

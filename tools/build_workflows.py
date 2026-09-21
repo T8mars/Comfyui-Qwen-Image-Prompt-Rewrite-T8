@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import uuid
 
@@ -9,7 +10,12 @@ from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMFY = Path("E:/ComfyUI-core-bernini-v2")
+configured_comfy = os.environ.get("QWEN_PE_COMFY_DIR")
+if not configured_comfy:
+    raise SystemExit("Set QWEN_PE_COMFY_DIR to your ComfyUI directory before regenerating workflows")
+COMFY = Path(configured_comfy).expanduser().resolve()
+if not (COMFY / "main.py").is_file():
+    raise SystemExit(f"QWEN_PE_COMFY_DIR is not a ComfyUI checkout: {COMFY}")
 SAVED = COMFY / "user/default/workflows/Qwen-PE-T2I-UI-Test.json"
 DEST = ROOT / "workflows"
 DEST.mkdir(exist_ok=True)

@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 from PIL import Image
+import torch
+from torch.nn.functional import interpolate
 
 
 ROOT = Path(__file__).resolve().parent
@@ -22,6 +24,50 @@ DEFAULT_T2I = "Qwen-Image-2.1-PE-T2I.Q4_K_M.gguf"
 DEFAULT_EDIT = "Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf"
 DEFAULT_MMPROJ = "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
 _RATIO = re.compile(r"^[1-9]\d{0,2}:[1-9]\d{0,2}$")
+_QUOTED_LITERAL = re.compile(
+    r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|'
+    r"(?<![A-Za-z0-9])'(?:[^'\n]|(?<=[A-Za-z0-9])'(?=[A-Za-z0-9]))*'(?![A-Za-z0-9])"
+)
+
+
+def _protected_quote(match, protected_literals):
+    return protected_literals is None or match.group()[1:-1] in protected_literals
+
+
+def strip_quoted_literals(text, protected_literals=None):
+    """Exclude exact image text without treating English apostrophes as quotes."""
+    return _QUOTED_LITERAL.sub(
+        lambda match: "" if _protected_quote(match, protected_literals) else match.group(), text)
+
+
+def mask_quoted_literals(text, protected_literals=None):
+    """Keep character offsets while excluding exact text requested for the image."""
+    return _QUOTED_LITERAL.sub(
+        lambda match: " " * len(match.group()) if _protected_quote(match, protected_literals)
+        else match.group(), text)
+
+
+def replace_unquoted(pattern, text, replace, protected_literals=None):
+    masked = mask_quoted_literals(text, protected_literals)
+    protected = [(item.start(), item.end()) for item in _QUOTED_LITERAL.finditer(text)
+                 if _protected_quote(item, protected_literals)]
+    parts = []
+    cursor = 0
+    count = 0
+    for match in pattern.finditer(masked):
+        if any(start < match.end() and end > match.start() for start, end in protected):
+            continue
+        replacement = replace(match, masked)
+        parts.extend((text[cursor:match.start()], replacement))
+        cursor = match.end()
+        count += replacement != match.group()
+    parts.append(text[cursor:])
+    return "".join(parts), count
+
+
+def quoted_literals(text, protected_literals=None):
+    return [match.group()[1:-1] for match in _QUOTED_LITERAL.finditer(text)
+            if _protected_quote(match, protected_literals)]
 
 
 def model_roots():
@@ -61,13 +107,16 @@ def resolve_model(name, vision=False):
 
 def pick_mmproj(model_name, chosen):
     available = local_models(True)
+    model_path = resolve_model(model_name)
     base = re.sub(r"\.(?:Q\d[^.]*)\.gguf$", "", Path(model_name).name, flags=re.IGNORECASE)
     if chosen != "Auto":
         path = resolve_model(chosen, True)
         if not path.name.startswith(base + ".mmproj"):
             raise ValueError(f"vision file {path.name} does not match model {model_name}")
         return path
-    matches = [path for name, path in available.items() if Path(name).name.startswith(base + ".mmproj")]
+    matches = [path for path in available.values()
+               if path.parent.resolve() == model_path.parent.resolve()
+               and path.name.startswith(base + ".mmproj")]
     if len(matches) == 1:
         return matches[0]
     raise ValueError(f"No unique matching mmproj for {model_name}; select its vision model explicitly")
@@ -80,15 +129,22 @@ def prepare_images(images):
         if tensor.ndim != 4 or tensor.shape[0] != 1 or tensor.shape[-1] not in (3, 4):
             raise ValueError(f"image_{index} must contain exactly one RGB/RGBA IMAGE, not a batch")
         height, width = int(tensor.shape[1]), int(tensor.shape[2])
+        if height < 1 or width < 1:
+            raise ValueError(f"image_{index} must have nonzero width and height")
         dimensions.append([width, height])
-        pixels = np.clip(tensor[0].detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
+        source = tensor.detach().permute(0, 3, 1, 2)
+        if width * height > 1024 * 1024:
+            scale = math.sqrt(1024 * 1024 / (width * height))
+            target = (max(1, int(height * scale)), max(1, int(width * scale)))
+            source = interpolate(source, size=target, mode="bilinear", align_corners=False,
+                                 antialias=source.dtype in (torch.float32, torch.float64))
+        scaled = source[0].permute(1, 2, 0).float().nan_to_num(nan=0.0, posinf=1.0, neginf=0.0)
+        pixels = np.clip(scaled.cpu().numpy() * 255.0,
+                         0, 255).astype(np.uint8)
         image = Image.fromarray(pixels)
         if image.mode == "RGBA":
             canvas = Image.new("RGBA", image.size, (255, 255, 255, 255))
             image = Image.alpha_composite(canvas, image).convert("RGB")
-        if width * height > 1024 * 1024:
-            scale = math.sqrt(1024 * 1024 / (width * height))
-            image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         result.append("data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"))
@@ -130,17 +186,18 @@ def parse_answer(raw, task, image_count):
     return answer
 
 
-def validate_references(answer, task, image_count):
-    references = {int(value) for value in re.findall(r"<image(\d+)>", answer["rewritten_prompt"])}
-    expected = set(range(1, image_count + 1)) if image_count >= 2 else set()
+def validate_references(answer, task, image_count, protected_literals=None):
+    prose = strip_quoted_literals(answer["rewritten_prompt"], protected_literals)
+    references = set(re.findall(r"<image[^>]*>", prose))
+    expected = {f"<image{i}>" for i in range(1, image_count + 1)} if image_count >= 2 else set()
     if references != expected:
         raise ValueError(f"image references in rewritten_prompt are {sorted(references)}, expected {sorted(expected)}")
 
 
-def validate_language(answer, output_language):
+def validate_language(answer, output_language, protected_literals=None):
     if output_language == "auto":
         return
-    prose = re.sub(r'"[^\"]*"|“[^”]*”|‘[^’]*’', "", answer["rewritten_prompt"])
+    prose = strip_quoted_literals(answer["rewritten_prompt"], protected_literals)
     contains_han = bool(re.search(r"[\u4e00-\u9fff]", prose))
     if output_language == "English" and contains_han:
         raise ValueError("rewritten descriptive prose is not fully English")
@@ -175,42 +232,29 @@ _OPAQUE_BACKDROP = re.compile(
     r"背景(?:是|为|呈)?[^。！？,.]{0,12}(?:纯白|白色|黑色|灰色|米色|棋盘格)", re.I)
 
 
-def normalize_opaque_background_phrases(prompt):
-    replacements = 0
-
-    def replace(match):
-        nonlocal replacements
-        prefix = prompt[max(0, match.start() - 18):match.start()]
+def normalize_opaque_background_phrases(prompt, protected_literals=None):
+    def replace(match, masked):
+        prefix = masked[max(0, match.start() - 18):match.start()]
         if re.search(r"\b(?:no|without|not)\s+(?:a\s+)?$|(?:不要|没有|不含|无)$", prefix, re.I):
             return match.group()
-        replacements += 1
         return "透明背景" if re.search(r"[\u4e00-\u9fff]", match.group()) else "transparent background"
 
-    return _OPAQUE_BACKDROP.sub(replace, prompt), replacements
+    return replace_unquoted(_OPAQUE_BACKDROP, prompt, replace, protected_literals)
 
 
-def normalize_transparent_margins(prompt):
-    replacements = 0
-
-    def english(match):
-        nonlocal replacements
-        replacements += 1
-        return "transparent margins"
-
-    prompt = re.sub(r"\b(?:even\s+)?(?:white|opaque)\s+(?:empty\s+)?margins?\b",
-                    english, prompt, flags=re.I)
-    for phrase in ("白色留白", "不透明留白", "白色空白边缘"):
-        count = prompt.count(phrase)
-        if count:
-            prompt = prompt.replace(phrase, "透明留白")
-            replacements += count
-    return prompt, replacements
+def normalize_transparent_margins(prompt, protected_literals=None):
+    pattern = re.compile(r"\b(?:even\s+)?(?:white|opaque)\s+(?:empty\s+)?margins?\b|"
+                         r"白色留白|不透明留白|白色空白边缘", re.I)
+    return replace_unquoted(pattern, prompt,
+                            lambda match, _: "透明留白" if re.search(r"[\u4e00-\u9fff]", match.group())
+                            else "transparent margins", protected_literals)
 
 
-def validate_mode(answer, aspect_ratio, transparent_rgba):
+def validate_mode(answer, aspect_ratio, transparent_rgba, protected_literals=None):
     errors = []
-    prose = answer["rewritten_prompt"]
-    if not prose.strip():
+    original = answer["rewritten_prompt"]
+    prose = mask_quoted_literals(original, protected_literals)
+    if not original.strip():
         errors.append("rewritten prompt became empty after transparency cleanup")
     if aspect_ratio != "auto":
         explicit_ratios = set(re.findall(r"\b\d{1,2}:\d{1,2}\b", prose))
@@ -239,14 +283,15 @@ def validate_mode(answer, aspect_ratio, transparent_rgba):
         raise ValueError("; ".join(errors))
 
 
-def remove_opaque_background_sentences(prompt):
+def remove_opaque_background_sentences(prompt, protected_literals=None):
     kept = []
     removed = 0
     for sentence in re.split(r"(?<=[.!?。！？])\s*", prompt):
-        has_backdrop = re.search(r"\bbackground\b|背景", sentence, re.I)
-        has_ground_shadow = re.search(r"\bshadow\b.{0,80}\bground\b|阴影.{0,40}地面", sentence, re.I)
-        safe = transparent_background_clause(sentence) if has_backdrop else False
-        if (has_backdrop and not safe) or (has_ground_shadow and not safe):
+        descriptive = mask_quoted_literals(sentence, protected_literals)
+        has_backdrop = re.search(r"\bbackground\b|背景", descriptive, re.I)
+        has_ground_shadow = re.search(r"\bshadow\b.{0,80}\bground\b|阴影.{0,40}地面", descriptive, re.I)
+        safe = transparent_background_clause(descriptive) if has_backdrop else False
+        if ((has_backdrop and not safe) or (has_ground_shadow and not safe)) and not quoted_literals(sentence, protected_literals):
             removed += 1
         elif sentence.strip():
             kept.append(sentence.strip())
@@ -276,19 +321,22 @@ class LocalServer:
 
     def stop(self):
         with self.lock:
-            if self.process is not None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=10)
+            try:
+                if self.process is not None:
+                    if self.process.poll() is None:
+                        self.process.terminate()
+                    try:
+                        self.process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait(timeout=10)
+            finally:
                 self.process = None
-            if self.log is not None:
-                self.log.close()
-                self.log = None
-            self.profile = None
-            self.port = None
+                if self.log is not None:
+                    self.log.close()
+                    self.log = None
+                self.profile = None
+                self.port = None
 
     def start(self, model, mmproj, context, gpu_layers):
         with self.lock:
@@ -308,26 +356,42 @@ class LocalServer:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             self.log = log_path.open("ab")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            self.process = subprocess.Popen(command, stdout=self.log, stderr=subprocess.STDOUT, creationflags=flags)
-            self.profile = profile
-            self.port = port
-            deadline = time.monotonic() + 180
-            while time.monotonic() < deadline:
-                if self.process.poll() is not None:
-                    raise RuntimeError(f"llama-server exited with {self.process.returncode}; see {log_path}")
+            try:
+                self.process = subprocess.Popen(command, stdout=self.log, stderr=subprocess.STDOUT, creationflags=flags)
+                self.profile = profile
+                self.port = port
                 try:
-                    with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
-                        if response.status == 200:
-                            return
-                except (URLError, TimeoutError, HTTPError):
-                    pass
-                time.sleep(0.5)
-            self.stop()
-            raise TimeoutError("llama-server did not become healthy within 180 seconds")
+                    import comfy.model_management as memory
+                    check_interrupt = memory.throw_exception_if_processing_interrupted
+                except ImportError:
+                    check_interrupt = None
+                deadline = time.monotonic() + 180
+                while time.monotonic() < deadline:
+                    if check_interrupt:
+                        check_interrupt()
+                    if self.process.poll() is not None:
+                        raise RuntimeError(f"llama-server exited with {self.process.returncode}; see {log_path}")
+                    try:
+                        with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
+                            if response.status == 200:
+                                return
+                    except (URLError, TimeoutError, HTTPError):
+                        pass
+                    time.sleep(0.5)
+                raise TimeoutError("llama-server did not become healthy within 180 seconds")
+            except BaseException:
+                self.stop()
+                raise
 
     def complete(self, task, prompt, images, seed, timeout,
                  output_language="auto", aspect_ratio="auto", transparent_rgba=False):
         with self.lock:
+            exact_literals = set(quoted_literals(prompt))
+            if task == "edit":
+                # Numbered image tags are references even when the user puts
+                # quotation marks around them in an editing instruction.
+                exact_literals = {value for value in exact_literals
+                                  if not re.fullmatch(r"<image\d+>", value)}
             system_name = "system_prompt_t2i.txt" if task == "t2i" else "system_prompt_edit.txt"
             system = (ROOT / "prompts" / system_name).read_text(encoding="utf-8").strip()
             content = [{"type": "image_url", "image_url": {"url": value}} for value in images]
@@ -384,38 +448,38 @@ class LocalServer:
                     removed_background_sentences = 0
                     if transparent_rgba:
                         answer["rewritten_prompt"], normalized_background_phrases = (
-                            normalize_opaque_background_phrases(answer["rewritten_prompt"]))
+                            normalize_opaque_background_phrases(answer["rewritten_prompt"], exact_literals))
                         answer["rewritten_prompt"], removed_background_sentences = (
-                            remove_opaque_background_sentences(answer["rewritten_prompt"]))
+                            remove_opaque_background_sentences(answer["rewritten_prompt"], exact_literals))
                         answer["rewritten_prompt"], normalized_margin_phrases = (
-                            normalize_transparent_margins(answer["rewritten_prompt"]))
+                            normalize_transparent_margins(answer["rewritten_prompt"], exact_literals))
                     else:
                         normalized_background_phrases = 0
                         normalized_margin_phrases = 0
-                    validate_references(answer, task, len(images))
+                    validate_references(answer, task, len(images), exact_literals)
                     translation_fallback = False
                     translation_usage = None
                     try:
-                        validate_language(answer, output_language)
+                        validate_language(answer, output_language, exact_literals)
                     except ValueError:
                         if output_language == "auto":
                             raise
                         answer["rewritten_prompt"], translation_usage = self._translate_prose(
-                            answer["rewritten_prompt"], output_language, seed, timeout)
+                            answer["rewritten_prompt"], output_language, seed, timeout, exact_literals)
                         translation_fallback = True
                         if transparent_rgba:
                             answer["rewritten_prompt"], normalized_more_backdrop = (
-                                normalize_opaque_background_phrases(answer["rewritten_prompt"]))
+                                normalize_opaque_background_phrases(answer["rewritten_prompt"], exact_literals))
                             normalized_background_phrases += normalized_more_backdrop
                             answer["rewritten_prompt"], removed_more = (
-                                remove_opaque_background_sentences(answer["rewritten_prompt"]))
+                                remove_opaque_background_sentences(answer["rewritten_prompt"], exact_literals))
                             removed_background_sentences += removed_more
                             answer["rewritten_prompt"], normalized_more = (
-                                normalize_transparent_margins(answer["rewritten_prompt"]))
+                                normalize_transparent_margins(answer["rewritten_prompt"], exact_literals))
                             normalized_margin_phrases += normalized_more
-                        validate_references(answer, task, len(images))
-                        validate_language(answer, output_language)
-                    validate_mode(answer, aspect_ratio, transparent_rgba)
+                        validate_references(answer, task, len(images), exact_literals)
+                        validate_language(answer, output_language, exact_literals)
+                    validate_mode(answer, aspect_ratio, transparent_rgba, exact_literals)
                     return answer, {"finish_reason": choice.get("finish_reason"),
                                     "usage": result.get("usage", {}),
                                     "format_retries": attempt, "first_format_error": first_error,
@@ -434,7 +498,7 @@ class LocalServer:
                     payload["messages"][0]["content"] = system
             raise AssertionError("unreachable")
 
-    def _translate_prose(self, prose, output_language, seed, timeout):
+    def _translate_prose(self, prose, output_language, seed, timeout, exact_literals=None):
         target = "Simplified Chinese" if output_language == "中文" else "English"
         if output_language == "中文":
             request_text = (
@@ -462,9 +526,7 @@ class LocalServer:
         translated = choice["message"].get("content") or ""
         translated = re.sub(r"^\s*<think>[\s\S]*?</think>\s*", "", translated)
         translated = re.sub(r"(?m)^\s*#{1,6}\s*", "", translated).strip()
-        exact_strings = re.findall(r'"([^"]+)"|“([^”]+)”', prose)
-        for ascii_text, chinese_text in exact_strings:
-            literal = ascii_text or chinese_text
+        for literal in quoted_literals(prose, exact_literals):
             if literal not in translated:
                 raise ValueError(f"translation changed exact quoted image text: {literal!r}")
         if not translated:

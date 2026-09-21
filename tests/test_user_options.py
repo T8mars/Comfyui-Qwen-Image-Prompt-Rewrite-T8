@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -42,6 +43,7 @@ class UserOptionTests(unittest.TestCase):
         self.assertEqual(_resolved_language("auto", "A blue coat on a bench."), "en")
         self.assertEqual(_resolved_language("auto", "一只蓝色外套。"), "zh")
         self.assertEqual(_resolved_language("auto", 'A poster with the title “春日新茶”.'), "en")
+        self.assertEqual(_resolved_language("auto", "A poster with the title '春日新茶'."), "en")
 
     def test_chinese_prose_accepts_common_dimension_notation(self):
         validate_language({"rewritten_prompt": "一幅2D平面插画，主体带有3D浮雕效果。"}, "中文")
@@ -77,6 +79,26 @@ class UserOptionTests(unittest.TestCase):
         self.assertNotIn("white background", normalized)
         validate_mode({"rewritten_prompt": normalized}, "3:4", True)
 
+    def test_transparent_cleanup_preserves_exact_quoted_image_text(self):
+        prompt = 'A poster reads "white background" in black letters.'
+        normalized, count = normalize_opaque_background_phrases(prompt)
+        self.assertEqual((normalized, count), (prompt, 0))
+        cleaned, removed = remove_opaque_background_sentences(prompt)
+        self.assertEqual((cleaned, removed), (prompt, 0))
+        validate_mode({"rewritten_prompt": prompt}, "16:9", True)
+        ratio_text = 'A poster reads "1:1" in large letters on a transparent background.'
+        validate_mode({"rewritten_prompt": ratio_text}, "16:9", True)
+        margins, count = normalize_transparent_margins('Print "white margins" on the poster.')
+        self.assertEqual((margins, count), ('Print "white margins" on the poster.', 0))
+        interleaved = 'Put white "SALE" background lettering on the shirt.'
+        normalized, count = normalize_opaque_background_phrases(interleaved)
+        self.assertEqual((normalized, count), (interleaved, 0))
+        model_quoted_description = '"A butterfly on a white background"'
+        with self.assertRaises(ValueError):
+            validate_mode({"rewritten_prompt": model_quoted_description}, "4:5", True, set())
+        validate_mode({"rewritten_prompt": model_quoted_description}, "4:5", True,
+                      {"A butterfly on a white background"})
+
     def test_canvas_uses_selected_ratio_or_followed_reference(self):
         comfy = types.ModuleType("comfy")
         memory = types.ModuleType("comfy.model_management")
@@ -92,15 +114,46 @@ class UserOptionTests(unittest.TestCase):
                 {"wh_ratio": "", "ratio_follow": "<image2>",
                  "image_dimensions": [[1024, 1024], [512, 384]]}, 1024, True)
             self.assertEqual((width, height, source), (512, 384, "<image2>"))
+            width, height, _, source = canvas.canvas(
+                {"wh_ratio": "", "ratio_follow": "<image1>",
+                 "image_dimensions": [[8192, 8192]]}, 1024, True)
+            self.assertEqual((width, height, source), (1024, 1024, "<image1>"))
+            width, height, _, _ = canvas.canvas(
+                {"wh_ratio": "", "ratio_follow": "<image1>",
+                 "image_dimensions": [[8, 8]]}, 1024, True)
+            self.assertEqual((width, height), (16, 16))
+            with self.assertRaisesRegex(ValueError, "too extreme"):
+                canvas.canvas({"wh_ratio": "1:999", "ratio_follow": "",
+                               "image_dimensions": []}, 1024, True)
 
-    def test_auto_cache_fingerprint_uses_effective_task(self):
+    def test_auto_cache_handles_unavailable_unused_vision_pair(self):
         value = QwenPERewrite.IS_CHANGED(task="auto", t2i_model=DEFAULT_T2I,
                                          edit_model=DEFAULT_T2I, vision_model=DEFAULT_MMPROJ)
         self.assertEqual(len(value), 64)
-        with self.assertRaises(ValueError):
-            QwenPERewrite.IS_CHANGED(task="auto", t2i_model=DEFAULT_T2I,
-                                     edit_model=DEFAULT_T2I, vision_model=DEFAULT_MMPROJ,
-                                     image_1=object())
+        linked_value = QwenPERewrite.IS_CHANGED(task="auto", t2i_model=DEFAULT_T2I,
+                                                edit_model=DEFAULT_T2I, vision_model=DEFAULT_MMPROJ,
+                                                image_1=None)
+        self.assertEqual(value, linked_value)
+
+    def test_auto_cache_includes_edit_model_when_linked_image_is_unresolved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            t2i, edit, vision = (root / name for name in ("t2i.gguf", "edit.gguf", "vision.gguf"))
+            for path in (t2i, edit, vision):
+                path.write_bytes(b"a")
+            def resolve(name):
+                return {"t2i": t2i, "edit": edit}[name]
+            with (patch("qwen_pe_test_package.pe_nodes.resolve_model", side_effect=resolve),
+                  patch("qwen_pe_test_package.pe_nodes.pick_mmproj", return_value=vision)):
+                inputs = {"task": "auto", "t2i_model": "t2i", "edit_model": "edit",
+                          "vision_model": "Auto", "image_1": None}
+                first = QwenPERewrite.IS_CHANGED(**inputs)
+                edit.write_bytes(b"changed")
+                second = QwenPERewrite.IS_CHANGED(**inputs)
+                self.assertNotEqual(first, second)
+                vision.write_bytes(b"changed")
+                third = QwenPERewrite.IS_CHANGED(**inputs)
+                self.assertNotEqual(second, third)
 
 
 if __name__ == "__main__":

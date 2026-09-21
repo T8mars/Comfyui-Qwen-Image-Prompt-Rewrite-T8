@@ -8,19 +8,20 @@ import time
 import torch
 
 from .pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, SERVER, local_models,
-                         pick_mmproj, prepare_images, resolve_model)
+                         pick_mmproj, prepare_images, quoted_literals, resolve_model, strip_quoted_literals)
 
 
 ASPECT_RATIOS = ["auto", "1:1", "1:2", "2:3", "3:4", "4:5", "16:9",
                  "21:9", "9:21", "5:4", "4:3", "2:1"]
 
 
-def _resolved_language(selection, rewritten_prompt):
+def _resolved_language(selection, rewritten_prompt, user_prompt=None):
     if selection == "中文":
         return "zh"
     if selection == "English":
         return "en"
-    prose = re.sub(r'"[^\"]*"|“[^”]*”|‘[^’]*’', "", rewritten_prompt)
+    exact_literals = set(quoted_literals(user_prompt)) if user_prompt is not None else None
+    prose = strip_quoted_literals(rewritten_prompt, exact_literals)
     return "zh" if re.search(r"[\u4e00-\u9fff]", prose) else "en"
 
 
@@ -83,17 +84,29 @@ class QwenPERewrite:
         fingerprint.update((root / "pe_runtime.py").read_bytes())
         for template in ("system_prompt_t2i.txt", "system_prompt_edit.txt"):
             fingerprint.update((root / "prompts" / template).read_bytes())
-        effective_task = ("edit" if any(kwargs.get(f"image_{i}") is not None for i in range(1, 11))
-                          else "t2i") if task == "auto" else task
-        names = [t2i_model] if effective_task == "t2i" else [edit_model]
+        # Comfy calls IS_CHANGED before resolving linked IMAGE outputs. Linked
+        # values arrive as None here, so auto must include both possible models.
+        names = [t2i_model, edit_model] if task == "auto" else [t2i_model if task == "t2i" else edit_model]
         for name in names:
-            path = resolve_model(name)
+            try:
+                path = resolve_model(name)
+            except FileNotFoundError:
+                if task != "auto":
+                    raise
+                fingerprint.update(f"unresolved-model:{name}".encode())
+                continue
             stat = path.stat()
             fingerprint.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
-        if effective_task == "edit":
-            path = pick_mmproj(edit_model, vision_model)
-            stat = path.stat()
-            fingerprint.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+        if task in ("auto", "edit"):
+            try:
+                path = pick_mmproj(edit_model, vision_model)
+            except (FileNotFoundError, ValueError):
+                if task == "edit":
+                    raise
+                fingerprint.update(f"unresolved-vision:{edit_model}:{vision_model}".encode())
+            else:
+                stat = path.stat()
+                fingerprint.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
         return fingerprint.hexdigest()
 
     def rewrite(self, user_prompt, task, aspect_ratio, output_language, transparent_rgba,
@@ -139,7 +152,7 @@ class QwenPERewrite:
         if aspect_ratio != "auto":
             answer["wh_ratio"] = aspect_ratio
             answer["ratio_follow"] = ""
-        language = _resolved_language(output_language, answer["rewritten_prompt"])
+        language = _resolved_language(output_language, answer["rewritten_prompt"], user_prompt)
         final_prompt = _format_prompt(answer["rewritten_prompt"], transparent_rgba, language)
         template_name = "system_prompt_t2i.txt" if actual_task == "t2i" else "system_prompt_edit.txt"
         template_hash = hashlib.sha256((Path(__file__).resolve().parent / "prompts" / template_name).read_bytes()).hexdigest()
@@ -180,7 +193,8 @@ class QwenPECanvas:
     def INPUT_TYPES(cls):
         return {"required": {
             "pe_result": ("PE_RESULT",),
-            "resolution": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 32}),
+            "resolution": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 32,
+                                   "tooltip": "画布像素预算为 resolution²；跟随原图尺寸时，大图会等比缩至预算内。"}),
             "follow_input_size": ("BOOLEAN", {"default": True}),
         }}
 
@@ -205,8 +219,19 @@ class QwenPECanvas:
             ratio = width / height
             width = math.sqrt(resolution * resolution * ratio)
             height = math.sqrt(resolution * resolution / ratio)
-        width = max(16, round(width / 16) * 16)
-        height = max(16, round(height / 16) * 16)
+        scale = min(1.0, resolution / math.sqrt(width * height), 4096 / max(width, height))
+        width *= scale
+        height *= scale
+        if min(width, height) < 16:
+            upscale = 16 / min(width, height)
+            if max(width, height) * upscale > 4096 or width * height * upscale**2 > resolution**2:
+                raise ValueError("aspect ratio is too extreme for the selected canvas budget")
+            width *= upscale
+            height *= upscale
+        # Flooring to the required 16-pixel grid keeps scaled input canvases
+        # inside the selected pixel budget instead of rounding back above it.
+        width = max(16, math.floor(width / 16) * 16)
+        height = max(16, math.floor(height / 16) * 16)
         import comfy.model_management as memory
         latent = torch.zeros([1, 64, height // 16, width // 16], device=memory.intermediate_device())
         return width, height, {"samples": latent}, source

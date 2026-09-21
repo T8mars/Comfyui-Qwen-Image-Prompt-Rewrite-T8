@@ -8,7 +8,12 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMFY = Path(os.environ.get("QWEN_PE_COMFY_DIR", "E:/comfyui-t8-onekey-5x/ComfyUI"))
+configured_comfy = os.environ.get("QWEN_PE_COMFY_DIR")
+if not configured_comfy:
+    raise SystemExit("Set QWEN_PE_COMFY_DIR to your ComfyUI directory before regenerating workflows")
+COMFY = Path(configured_comfy).expanduser().resolve()
+if not (COMFY / "main.py").is_file():
+    raise SystemExit(f"QWEN_PE_COMFY_DIR is not a ComfyUI checkout: {COMFY}")
 PE_TEMPLATE = ROOT / "workflows/Qwen-PE-2.1-Text-to-Image-Ready.json"
 QWEN_TEMPLATE = Path(os.environ.get(
     "QWEN_PE_QWEN_TEMPLATE",
