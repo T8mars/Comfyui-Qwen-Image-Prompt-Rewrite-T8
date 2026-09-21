@@ -98,6 +98,10 @@ class UserOptionTests(unittest.TestCase):
             validate_mode({"rewritten_prompt": model_quoted_description}, "4:5", True, set())
         validate_mode({"rewritten_prompt": model_quoted_description}, "4:5", True,
                       {"A butterfly on a white background"})
+        chinese_quotes = '一张海报写着「white background」，其余背景透明。'
+        normalized, count = normalize_opaque_background_phrases(
+            chinese_quotes, {"white background"})
+        self.assertEqual((normalized, count), (chinese_quotes, 0))
 
     def test_canvas_uses_selected_ratio_or_followed_reference(self):
         comfy = types.ModuleType("comfy")

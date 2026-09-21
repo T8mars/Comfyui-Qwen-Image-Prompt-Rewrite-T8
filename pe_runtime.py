@@ -23,9 +23,11 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_T2I = "Qwen-Image-2.1-PE-T2I.Q4_K_M.gguf"
 DEFAULT_EDIT = "Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf"
 DEFAULT_MMPROJ = "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
+MAX_VISUAL_PIXELS = 1024 * 1024
+MAX_VISUAL_SIDE = 4096
 _RATIO = re.compile(r"^[1-9]\d{0,2}:[1-9]\d{0,2}$")
 _QUOTED_LITERAL = re.compile(
-    r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|'
+    r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|«[^»\n]*»|'
     r"(?<![A-Za-z0-9])'(?:[^'\n]|(?<=[A-Za-z0-9])'(?=[A-Za-z0-9]))*'(?![A-Za-z0-9])"
 )
 
@@ -106,17 +108,15 @@ def resolve_model(name, vision=False):
 
 
 def pick_mmproj(model_name, chosen):
-    available = local_models(True)
     model_path = resolve_model(model_name)
     base = re.sub(r"\.(?:Q\d[^.]*)\.gguf$", "", Path(model_name).name, flags=re.IGNORECASE)
     if chosen != "Auto":
         path = resolve_model(chosen, True)
-        if not path.name.startswith(base + ".mmproj"):
+        if not path.name.lower().startswith((base + ".mmproj").lower()):
             raise ValueError(f"vision file {path.name} does not match model {model_name}")
         return path
-    matches = [path for path in available.values()
-               if path.parent.resolve() == model_path.parent.resolve()
-               and path.name.startswith(base + ".mmproj")]
+    matches = [path for path in model_path.parent.glob("*.gguf")
+               if path.is_file() and path.name.lower().startswith((base + ".mmproj").lower())]
     if len(matches) == 1:
         return matches[0]
     raise ValueError(f"No unique matching mmproj for {model_name}; select its vision model explicitly")
@@ -133,8 +133,9 @@ def prepare_images(images):
             raise ValueError(f"image_{index} must have nonzero width and height")
         dimensions.append([width, height])
         source = tensor.detach().permute(0, 3, 1, 2)
-        if width * height > 1024 * 1024:
-            scale = math.sqrt(1024 * 1024 / (width * height))
+        if width * height > MAX_VISUAL_PIXELS or max(width, height) > MAX_VISUAL_SIDE:
+            scale = min(math.sqrt(MAX_VISUAL_PIXELS / (width * height)),
+                        MAX_VISUAL_SIDE / max(width, height))
             target = (max(1, int(height * scale)), max(1, int(width * scale)))
             source = interpolate(source, size=target, mode="bilinear", align_corners=False,
                                  antialias=source.dtype in (torch.float32, torch.float64))
@@ -153,17 +154,29 @@ def prepare_images(images):
 
 def parse_answer(raw, task, image_count):
     decoder = json.JSONDecoder()
-    answer = None
-    for start in reversed([i for i, char in enumerate(raw) if char == "{"]):
-        try:
-            candidate, _ = decoder.raw_decode(raw[start:])
-        except json.JSONDecodeError:
+    parsed = []
+    cursor = 0
+    while cursor < len(raw):
+        if raw.startswith("<think>", cursor):
+            end_thinking = raw.find("</think>", cursor + len("<think>"))
+            if end_thinking < 0:
+                raise ValueError("model returned an incomplete thinking block")
+            cursor = end_thinking + len("</think>")
             continue
-        if isinstance(candidate, dict):
-            answer = candidate
-            break
-    if answer is None:
+        if raw.startswith("</think>", cursor):
+            raise ValueError("model returned an unmatched thinking block close")
+        if raw[cursor] not in "{[":
+            cursor += 1
+            continue
+        try:
+            candidate, end = decoder.raw_decode(raw[cursor:])
+        except json.JSONDecodeError as exc:
+            raise ValueError("model returned malformed top-level JSON") from exc
+        parsed.append(candidate)
+        cursor += end
+    if not parsed or not isinstance(parsed[-1], dict):
         raise ValueError("model did not return a valid final JSON object")
+    answer = parsed[-1]
     required = {"rewritten_prompt", "wh_ratio"} if task == "t2i" else {"rewritten_prompt", "wh_ratio", "ratio_follow"}
     if set(answer) != required:
         raise ValueError(f"wrong answer fields: got {sorted(answer)}, expected {sorted(required)}")
@@ -340,9 +353,18 @@ class LocalServer:
 
     def start(self, model, mmproj, context, gpu_layers):
         with self.lock:
-            profile = (str(model.resolve()), str(mmproj.resolve()) if mmproj else "", context, gpu_layers)
+            def signature(path):
+                stat = path.stat()
+                return str(path.resolve()), stat.st_size, stat.st_mtime_ns
+
+            profile = (signature(model), signature(mmproj) if mmproj else None, context, gpu_layers)
             if self.process is not None and self.process.poll() is None and self.profile == profile:
-                return
+                try:
+                    with urlopen(f"http://127.0.0.1:{self.port}/health", timeout=2) as response:
+                        if response.status == 200:
+                            return
+                except (URLError, TimeoutError, HTTPError):
+                    pass
             self.stop()
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))

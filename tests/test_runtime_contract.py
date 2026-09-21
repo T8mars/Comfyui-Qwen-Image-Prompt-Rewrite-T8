@@ -7,13 +7,13 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import torch
 from PIL import Image
 
 from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ,
-                        LocalServer, local_models, parse_answer, pick_mmproj, prepare_images,
+                        LocalServer, local_models, parse_answer, pick_mmproj, prepare_images, quoted_literals,
                         remove_opaque_background_sentences, validate_language, validate_mode,
                         validate_references)
 
@@ -22,6 +22,21 @@ class RuntimeContractTests(unittest.TestCase):
     def test_parse_t2i_json_after_thinking_text(self):
         raw = '<think>the example {"wrong": 1} is invalid</think>\n{"rewritten_prompt":"a blue dog", "wh_ratio":"3:2"}'
         self.assertEqual(parse_answer(raw, "t2i", 0)["wh_ratio"], "3:2")
+
+    def test_parse_rejects_thinking_only_and_nested_wrapper(self):
+        draft = '<think>{"rewritten_prompt":"draft blue dog","wh_ratio":"1:1"}</think>'
+        with self.assertRaisesRegex(ValueError, "valid final JSON"):
+            parse_answer(draft, "t2i", 0)
+        wrapped = '{"answer":{"rewritten_prompt":"blue dog","wh_ratio":"1:1"}}'
+        with self.assertRaisesRegex(ValueError, "wrong answer fields"):
+            parse_answer(wrapped, "t2i", 0)
+        malformed_wrapper = '{"answer":{"rewritten_prompt":"blue dog","wh_ratio":"1:1"}'
+        with self.assertRaises(ValueError):
+            parse_answer(malformed_wrapper, "t2i", 0)
+        with self.assertRaisesRegex(ValueError, "incomplete thinking"):
+            parse_answer('<think>{"rewritten_prompt":"draft","wh_ratio":"1:1"}', "t2i", 0)
+        literal = '{"rewritten_prompt":"A poster says \\"<think>HELLO</think>\\".","wh_ratio":"1:1"}'
+        self.assertIn("<think>HELLO</think>", parse_answer(literal, "t2i", 0)["rewritten_prompt"])
 
     def test_parse_rejects_extra_field_and_bad_image_reference(self):
         with self.assertRaises(ValueError):
@@ -69,6 +84,10 @@ class RuntimeContractTests(unittest.TestCase):
     def test_explicit_chinese_rejects_stray_english_but_preserves_literal_text(self):
         validate_language({"rewritten_prompt": "一张海报，标题写成\"FRESH BREAD\"。"}, "中文")
         validate_language({"rewritten_prompt": "一张海报，标题写成 'FRESH BREAD'。"}, "中文")
+        for delimiters in ("「」", "『』", "«»"):
+            prompt = f"一张海报，标题写成{delimiters[0]}FRESH BREAD{delimiters[1]}。"
+            self.assertEqual(quoted_literals(prompt), ["FRESH BREAD"])
+            validate_language({"rewritten_prompt": prompt}, "中文", set(quoted_literals(prompt)))
         validate_language({"rewritten_prompt": "A poster displays '你好' in red type."}, "English")
         validate_language({"rewritten_prompt": "Don't change the title '你好'."}, "English")
         with self.assertRaises(ValueError):
@@ -85,6 +104,14 @@ class RuntimeContractTests(unittest.TestCase):
         bf16_encoded, bf16_dimensions = prepare_images([bf16])
         self.assertEqual(bf16_dimensions, [[1200, 1200]])
         self.assertTrue(bf16_encoded[0].startswith("data:image/png;base64,"))
+        needle, original = prepare_images([torch.zeros((1, 1, 8192, 3))])
+        self.assertEqual(original, [[8192, 1]])
+        with Image.open(io.BytesIO(base64.b64decode(needle[0].split(",", 1)[1]))) as reduced:
+            self.assertEqual(reduced.size, (4096, 1))
+        very_long, _ = prepare_images([torch.zeros((1, 1, 1_200_000, 3))])
+        with Image.open(io.BytesIO(base64.b64decode(very_long[0].split(",", 1)[1]))) as reduced:
+            self.assertLessEqual(reduced.width * reduced.height, 1024 * 1024)
+            self.assertLessEqual(max(reduced.size), 4096)
         with self.assertRaises(ValueError):
             prepare_images([torch.zeros((2, 100, 100, 3))])
 
@@ -114,6 +141,19 @@ class RuntimeContractTests(unittest.TestCase):
             (root / "A" / name).write_bytes(b"model")
             with patch.dict(os.environ, {"QWEN_PE_MODEL_DIR": str(root)}):
                 self.assertEqual(pick_mmproj("A/" + name, "Auto"), root / "A" / vision)
+
+    def test_auto_vision_model_ignores_duplicate_name_in_other_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            model_root, override_root = Path(temp) / "model", Path(temp) / "override"
+            model_root.mkdir()
+            override_root.mkdir()
+            model = model_root / "Example.Q4_K_M.gguf"
+            vision = "Example.mmproj-f16.gguf"
+            model.write_bytes(b"main")
+            (model_root / vision).write_bytes(b"correct")
+            (override_root / vision).write_bytes(b"other")
+            with patch("pe_runtime.model_roots", return_value=iter([override_root, model_root])):
+                self.assertEqual(pick_mmproj(model.name, "Auto"), model_root / vision)
 
     def test_server_cleans_up_after_failed_start_and_interrupt(self):
         class FakeProcess:
@@ -183,6 +223,43 @@ class RuntimeContractTests(unittest.TestCase):
             actual, _ = server.complete("t2i", 'A poster reads "white background".',
                                         [], 42, 1, aspect_ratio="4:5", transparent_rgba=True)
         self.assertIn('"white background"', actual["rewritten_prompt"])
+
+    def test_kept_server_reloads_replaced_model_file(self):
+        class FakeProcess:
+            returncode = None
+            terminated = False
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = 0
+
+            def wait(self, timeout):
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as temp:
+            import pe_runtime
+            model = Path(temp) / "model.gguf"
+            model.write_bytes(b"old")
+            first, second = FakeProcess(), FakeProcess()
+            health = MagicMock()
+            health.status = 200
+            health.__enter__.return_value = health
+            with (patch.object(pe_runtime, "ROOT", Path(temp)),
+                  patch.object(LocalServer, "binary", return_value=Path(temp) / "server"),
+                  patch.object(pe_runtime.subprocess, "Popen", side_effect=[first, second]) as launch,
+                  patch.object(pe_runtime, "urlopen", return_value=health)):
+                server = LocalServer()
+                server.start(model, None, 1024, 0)
+                server.start(model, None, 1024, 0)
+                self.assertEqual(launch.call_count, 1)
+                model.write_bytes(b"new model with different size")
+                server.start(model, None, 1024, 0)
+                self.assertTrue(first.terminated)
+                self.assertEqual(launch.call_count, 2)
+                server.stop()
 
 
 if __name__ == "__main__":
