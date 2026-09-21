@@ -13,7 +13,8 @@ import torch
 from PIL import Image
 
 from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ,
-                        LocalServer, local_models, parse_answer, pick_mmproj, prepare_images, quoted_literals,
+                        LocalServer, file_signature, local_models, parse_answer, pick_mmproj,
+                        prepare_images, quoted_literals,
                         remove_opaque_background_sentences, validate_language, validate_mode,
                         validate_references)
 
@@ -92,6 +93,10 @@ class RuntimeContractTests(unittest.TestCase):
         validate_language({"rewritten_prompt": "Don't change the title '你好'."}, "English")
         with self.assertRaises(ValueError):
             validate_language({"rewritten_prompt": "一张 watercolor 海报。"}, "中文")
+        with self.assertRaisesRegex(ValueError, "non-target writing scripts"):
+            validate_language({"rewritten_prompt": "赤い猫の写真。"}, "中文", set())
+        with self.assertRaisesRegex(ValueError, "non-target writing scripts"):
+            validate_language({"rewritten_prompt": "빨간 고양이 사진."}, "English", set())
 
     def test_image_preparation_preserves_original_size_and_rejects_batch(self):
         image = torch.zeros((1, 1200, 1600, 3), dtype=torch.float32)
@@ -114,6 +119,34 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertLessEqual(max(reduced.size), 4096)
         with self.assertRaises(ValueError):
             prepare_images([torch.zeros((2, 100, 100, 3))])
+
+    def test_rgba_downscale_does_not_bleed_invisible_rgb_into_visible_pixels(self):
+        image = torch.zeros((1, 1, 8192, 4))
+        image[0, 0, ::2, 3] = 1.0  # opaque black
+        image[0, 0, 1::2, 0] = 1.0  # transparent red, invisible before filtering
+        encoded, _ = prepare_images([image])
+        with Image.open(io.BytesIO(base64.b64decode(encoded[0].split(",", 1)[1]))) as reduced:
+            red, green, blue = reduced.convert("RGB").getpixel((2048, 0))
+        self.assertLessEqual(max(red, green, blue) - min(red, green, blue), 1)
+        self.assertTrue(110 <= red <= 145)
+        vertical, _ = prepare_images([image.permute(0, 2, 1, 3)])
+        with Image.open(io.BytesIO(base64.b64decode(vertical[0].split(",", 1)[1]))) as reduced:
+            red, green, blue = reduced.convert("RGB").getpixel((0, 2048))
+        self.assertLessEqual(max(red, green, blue) - min(red, green, blue), 1)
+        tiny = torch.zeros((1, 1, 1, 4))
+        tiny[0, 0, 0, 0] = 1.0
+        untouched, _ = prepare_images([tiny])
+        with Image.open(io.BytesIO(base64.b64decode(untouched[0].split(",", 1)[1]))) as reduced:
+            self.assertEqual(reduced.convert("RGB").getpixel((0, 0)), (255, 255, 255))
+        tiny[0, 0, 0, 3] = float("nan")
+        cleaned, _ = prepare_images([tiny])
+        with Image.open(io.BytesIO(base64.b64decode(cleaned[0].split(",", 1)[1]))) as reduced:
+            self.assertEqual(reduced.convert("RGB").getpixel((0, 0)), (255, 255, 255))
+        tiny[0, 0, 0, :3] = 1.0
+        tiny[0, 0, 0, 3] = float("inf")
+        cleaned, _ = prepare_images([tiny])
+        with Image.open(io.BytesIO(base64.b64decode(cleaned[0].split(",", 1)[1]))) as reduced:
+            self.assertEqual(reduced.convert("RGB").getpixel((0, 0)), (255, 255, 255))
 
     def test_model_discovery_includes_additional_local_gguf(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -154,6 +187,29 @@ class RuntimeContractTests(unittest.TestCase):
             (override_root / vision).write_bytes(b"other")
             with patch("pe_runtime.model_roots", return_value=iter([override_root, model_root])):
                 self.assertEqual(pick_mmproj(model.name, "Auto"), model_root / vision)
+
+    def test_bf16_edit_weight_pairs_with_vision_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            model = root / "Qwen-Image-2.1-PE-I2I.BF16.gguf"
+            vision = root / "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
+            model.write_bytes(b"model")
+            vision.write_bytes(b"vision")
+            with patch("pe_runtime.model_roots", side_effect=lambda: iter([root])):
+                self.assertEqual(pick_mmproj(model.name, "Auto"), vision)
+                self.assertEqual(pick_mmproj(model.name, vision.name), vision)
+
+    def test_file_signature_changes_for_same_size_atomic_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "model.gguf"
+            replacement = Path(temp) / "replacement.gguf"
+            path.write_bytes(b"old")
+            before = file_signature(path)
+            original = path.stat()
+            replacement.write_bytes(b"new")
+            os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+            os.replace(replacement, path)
+            self.assertNotEqual(file_signature(path), before)
 
     def test_server_cleans_up_after_failed_start_and_interrupt(self):
         class FakeProcess:
@@ -224,6 +280,23 @@ class RuntimeContractTests(unittest.TestCase):
                                         [], 42, 1, aspect_ratio="4:5", transparent_rgba=True)
         self.assertIn('"white background"', actual["rewritten_prompt"])
 
+    def test_translation_requires_exact_text_to_remain_quoted(self):
+        server = LocalServer()
+        result = {"choices": [{"message": {"content":
+                  "HELLO appears elsewhere; the sign says 'GOODBYE'."},
+                  "finish_reason": "stop"}], "usage": {}}
+        with patch.object(server, "_post_completion", return_value=result):
+            with self.assertRaisesRegex(ValueError, "quoted image text"):
+                server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
+        result["choices"][0]["message"]["content"] = '"HELLO" appears elsewhere; the sign says "GOODBYE".'
+        with patch.object(server, "_post_completion", return_value=result):
+            with self.assertRaisesRegex(ValueError, "quoted image text"):
+                server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
+        result["choices"][0]["message"]["content"] = 'The sign says "HELLO".'
+        with patch.object(server, "_post_completion", return_value=result):
+            translated, _ = server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
+        self.assertEqual(translated, 'The sign says "HELLO".')
+
     def test_kept_server_reloads_replaced_model_file(self):
         class FakeProcess:
             returncode = None
@@ -255,7 +328,11 @@ class RuntimeContractTests(unittest.TestCase):
                 server.start(model, None, 1024, 0)
                 server.start(model, None, 1024, 0)
                 self.assertEqual(launch.call_count, 1)
-                model.write_bytes(b"new model with different size")
+                old_stat = model.stat()
+                replacement = Path(temp) / "replacement.gguf"
+                replacement.write_bytes(b"new")
+                os.utime(replacement, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+                os.replace(replacement, model)
                 server.start(model, None, 1024, 0)
                 self.assertTrue(first.terminated)
                 self.assertEqual(launch.call_count, 2)

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -53,8 +54,10 @@ class UserOptionTests(unittest.TestCase):
     def test_transparent_cleanup_rejects_checkerboard_despite_unrelated_negation(self):
         prompt = ("一只金色蝴蝶。画面背景为灰白棋盘格，没有明显的外部投影。"
                   "主体有细致花纹。")
-        cleaned, removed = remove_opaque_background_sentences(prompt)
-        self.assertEqual(removed, 1)
+        normalized, count = normalize_opaque_background_phrases(prompt)
+        self.assertEqual(count, 1)
+        cleaned, removed = remove_opaque_background_sentences(normalized)
+        self.assertEqual(removed, 0)
         self.assertNotIn("棋盘格", cleaned)
         validate_mode({"rewritten_prompt": cleaned}, "4:5", True)
         with self.assertRaises(ValueError):
@@ -78,6 +81,32 @@ class UserOptionTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertNotIn("white background", normalized)
         validate_mode({"rewritten_prompt": normalized}, "3:4", True)
+
+    def test_transparent_cleanup_preserves_subject_in_mixed_background_sentence(self):
+        prompt = "A red cat wears a gold crown against a brick wall background."
+        normalized, count = normalize_opaque_background_phrases(prompt)
+        self.assertEqual(count, 1)
+        self.assertIn("A red cat wears a gold crown", normalized)
+        self.assertIn("transparent background", normalized)
+        cleaned, removed = remove_opaque_background_sentences(normalized)
+        self.assertEqual(removed, 0)
+        validate_mode({"rewritten_prompt": cleaned}, "4:5", True)
+
+        unsupported = "A red cat wears a gold crown with a brick wall background."
+        cleaned, removed = remove_opaque_background_sentences(unsupported)
+        self.assertEqual((cleaned, removed), (unsupported, 0))
+        with self.assertRaises(ValueError):
+            validate_mode({"rewritten_prompt": cleaned}, "4:5", True)
+        background_text = "Background text reads HELLO above the red cat."
+        cleaned, removed = remove_opaque_background_sentences(background_text)
+        self.assertEqual((cleaned, removed), (background_text, 0))
+        mixed = "The background is a brick wall, and a red cat wears a gold crown."
+        cleaned, removed = remove_opaque_background_sentences(mixed)
+        self.assertEqual((cleaned, removed), (mixed, 0))
+        with self.assertRaises(ValueError):
+            validate_mode({"rewritten_prompt": cleaned}, "4:5", True)
+        validate_mode({"rewritten_prompt": "A red cat has no shadow on the ground, on a transparent background."},
+                      "4:5", True)
 
     def test_transparent_cleanup_preserves_exact_quoted_image_text(self):
         prompt = 'A poster reads "white background" in black letters.'
@@ -158,6 +187,13 @@ class UserOptionTests(unittest.TestCase):
                 vision.write_bytes(b"changed")
                 third = QwenPERewrite.IS_CHANGED(**inputs)
                 self.assertNotEqual(second, third)
+                previous = edit.stat()
+                replacement = root / "replacement.gguf"
+                replacement.write_bytes(b"newdata")
+                os.utime(replacement, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+                os.replace(replacement, edit)
+                fourth = QwenPERewrite.IS_CHANGED(**inputs)
+                self.assertNotEqual(third, fourth)
 
 
 if __name__ == "__main__":

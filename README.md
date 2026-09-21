@@ -8,7 +8,7 @@
 
 ## 安装
 
-1. 在 ComfyUI Manager 搜索 `qwen-image-prompt-rewrite-t8` 并安装；也可运行 `comfy node install qwen-image-prompt-rewrite-t8`，或把本仓库放进 `ComfyUI/custom_nodes/`。然后重启 ComfyUI。
+1. 当前 Registry 版本仍待审核；先将[本仓库](https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8)克隆或解压到 `ComfyUI/custom_nodes/Comfyui-Qwen-Image-Prompt-Rewrite-T8/`，然后重启 ComfyUI。待 Registry 状态转为 Active 后，也可在 ComfyUI Manager 搜索 `qwen-image-prompt-rewrite-t8` 安装，或运行 `comfy node install qwen-image-prompt-rewrite-t8`。
 2. 在本目录运行 `python tools/download_models.py`。下载器将三个 Q4_K_M 主模型及 I2I 的 BF16 视觉组件放入 `models/llm/qwenimage-pe/`，对现有文件按大小和 SHA256 校验，对中断下载续传。视觉组件的发布仓库没有 Q4 文件。
 3. Windows 上运行 `powershell -ExecutionPolicy Bypass -File tools/download_runtime.ps1`，获取官方 llama.cpp b11068 CUDA 12.4 发行包。其他平台可自行安装兼容的 `llama-server`，并将其可执行文件路径设置为环境变量 `QWEN_PE_LLAMA_SERVER`。
 4. ComfyUI 的 Python 环境须已有 `torch`、`numpy`、`Pillow`。启动后在“Qwen Image 2.1 / Prompt Rewrite”分类查找节点。
@@ -36,7 +36,7 @@
 
 默认 `after_run` 在任务完成或报错后退出自有 `llama-server`。`keep_loaded` 只缓存当前 profile；模型、视觉组件或上下文配置变化时先关闭旧进程。服务仅绑定 `127.0.0.1`。图片按插口顺序放在同一次多模态请求中，视觉副本限制为最多 1,048,576 像素且最长边不超过 4096 像素；原图尺寸留在结果里供画布使用。模型必须返回官方要求的严格 JSON 字段，否则节点报错，不会凭空补齐或静默忽略图片。
 
-固定比例会覆盖模型选择的 `wh_ratio`/`ratio_follow` 并传给 Canvas，诊断中保留模型原始值。遵照官方模板，数字比例只放在比例字段里，不强塞到描述性提示词。明确选择 `中文` 或 `English` 时，节点会验证描述性文字的语言；`auto` 遵从模型输出，并以实际改写文字标记语言。图内需要精确呈现的引号内文字仍以用户要求为准。透明图开关会在实际输出语言的最终提示词前后加入 RGBA、alpha 通道和透明背景说明；明显描述实体背景的句子会被移除，白底/白色留白等冲突短语会规范为透明背景/留白，并记录改动数量。它是提示词约束，实际输出是否具有 alpha 通道还取决于下游图像生成模型与解码工作流。
+固定比例会覆盖模型选择的 `wh_ratio`/`ratio_follow` 并传给 Canvas，诊断中保留模型原始值。遵照官方模板，数字比例只放在比例字段里，不强塞到描述性提示词。明确选择 `中文` 或 `English` 时，节点会检查描述性文字中的汉字、拉丁字母和其他文字脚本，必要时触发本地翻译；同属拉丁字母的语言仍依赖模型遵守语言指令。`auto` 遵从模型输出，并以实际改写文字标记语言。图内需要精确呈现的引号内文字仍以用户要求为准。透明图开关会在实际输出语言的最终提示词前后加入 RGBA、alpha 通道和透明背景说明；能安全识别的白底、实体背景短语和白色留白会规范为透明背景/留白，仅背景独立句会被移除，含主体信息的冲突句则要求模型重写，并记录改动数量。它是提示词约束，实际输出是否具有 alpha 通道还取决于下游图像生成模型与解码工作流。
 
 当原始指令的语言和所选输出语言不同，模型可能先按官方模板产生原语言改写；节点会用当前本地模型再做一次受约束的翻译并复验图片标签和引号内文字。诊断中的 `translation_fallback` 和 `translation_usage` 显示这一步是否发生，因此跨语言模式可能比自动语言模式慢。
 

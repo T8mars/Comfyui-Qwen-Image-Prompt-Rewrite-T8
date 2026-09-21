@@ -26,6 +26,8 @@ DEFAULT_MMPROJ = "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
 MAX_VISUAL_PIXELS = 1024 * 1024
 MAX_VISUAL_SIDE = 4096
 _RATIO = re.compile(r"^[1-9]\d{0,2}:[1-9]\d{0,2}$")
+_HAN = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_OTHER_SCRIPT = re.compile(r"[\u0400-\u052f\u0590-\u06ff\u0900-\u097f\u0e00-\u0e7f\u3040-\u30ff\uac00-\ud7af]")
 _QUOTED_LITERAL = re.compile(
     r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|«[^»\n]*»|'
     r"(?<![A-Za-z0-9])'(?:[^'\n]|(?<=[A-Za-z0-9])'(?=[A-Za-z0-9]))*'(?![A-Za-z0-9])"
@@ -107,9 +109,16 @@ def resolve_model(name, vision=False):
     return path
 
 
+def file_signature(path):
+    stat = path.stat()
+    return (str(path.resolve()), stat.st_dev, stat.st_ino, stat.st_size,
+            stat.st_mtime_ns, stat.st_ctime_ns)
+
+
 def pick_mmproj(model_name, chosen):
     model_path = resolve_model(model_name)
-    base = re.sub(r"\.(?:Q\d[^.]*)\.gguf$", "", Path(model_name).name, flags=re.IGNORECASE)
+    base = re.sub(r"\.(?:Q\d[^.]*|IQ\d[^.]*|BF16|F16|F32)$", "",
+                  Path(model_name).stem, flags=re.IGNORECASE)
     if chosen != "Auto":
         path = resolve_model(chosen, True)
         if not path.name.lower().startswith((base + ".mmproj").lower()):
@@ -120,6 +129,45 @@ def pick_mmproj(model_name, chosen):
     if len(matches) == 1:
         return matches[0]
     raise ValueError(f"No unique matching mmproj for {model_name}; select its vision model explicitly")
+
+
+def _composite_rgba_white(source):
+    """Composite a channel-first RGBA tensor without changing the caller's IMAGE."""
+    alpha = source[:, 3:4].float().nan_to_num(nan=0.0, posinf=1.0, neginf=0.0).clamp_(0, 1)
+    rgb = source[:, :3].float().clone().nan_to_num_(nan=0.0, posinf=1.0, neginf=0.0).clamp_(0, 1)
+    return rgb.sub_(1).mul_(alpha).add_(1)
+
+
+def _resize_rgba_white(source, target):
+    """Composite before filtering, keeping large RGBA copies bounded by strips."""
+    height, width = source.shape[-2:]
+    target_height, target_width = target
+    if (height, width) == target:
+        return _composite_rgba_white(source)
+    if width / target_width >= height / target_height:
+        strip_rows = max(1, MAX_VISUAL_PIXELS // width)
+        intermediate = torch.empty((1, 3, height, target_width),
+                                   dtype=torch.float32, device=source.device)
+        for start in range(0, height, strip_rows):
+            end = min(height, start + strip_rows)
+            strip = _composite_rgba_white(source[:, :, start:end, :])
+            intermediate[:, :, start:end, :] = interpolate(
+                strip, size=(end - start, target_width), mode="bilinear",
+                align_corners=False, antialias=True)
+    else:
+        strip_columns = max(1, MAX_VISUAL_PIXELS // height)
+        intermediate = torch.empty((1, 3, target_height, width),
+                                   dtype=torch.float32, device=source.device)
+        for start in range(0, width, strip_columns):
+            end = min(width, start + strip_columns)
+            strip = _composite_rgba_white(source[:, :, :, start:end])
+            intermediate[:, :, :, start:end] = interpolate(
+                strip, size=(target_height, end - start), mode="bilinear",
+                align_corners=False, antialias=True)
+    if intermediate.shape[-2:] == target:
+        return intermediate
+    return interpolate(intermediate, size=target, mode="bilinear",
+                       align_corners=False, antialias=True)
 
 
 def prepare_images(images):
@@ -133,19 +181,20 @@ def prepare_images(images):
             raise ValueError(f"image_{index} must have nonzero width and height")
         dimensions.append([width, height])
         source = tensor.detach().permute(0, 3, 1, 2)
+        target = (height, width)
         if width * height > MAX_VISUAL_PIXELS or max(width, height) > MAX_VISUAL_SIDE:
             scale = min(math.sqrt(MAX_VISUAL_PIXELS / (width * height)),
                         MAX_VISUAL_SIDE / max(width, height))
             target = (max(1, int(height * scale)), max(1, int(width * scale)))
+        if source.shape[1] == 4:
+            source = _resize_rgba_white(source, target)
+        elif target != (height, width):
             source = interpolate(source, size=target, mode="bilinear", align_corners=False,
                                  antialias=source.dtype in (torch.float32, torch.float64))
         scaled = source[0].permute(1, 2, 0).float().nan_to_num(nan=0.0, posinf=1.0, neginf=0.0)
         pixels = np.clip(scaled.cpu().numpy() * 255.0,
                          0, 255).astype(np.uint8)
         image = Image.fromarray(pixels)
-        if image.mode == "RGBA":
-            canvas = Image.new("RGBA", image.size, (255, 255, 255, 255))
-            image = Image.alpha_composite(canvas, image).convert("RGB")
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         result.append("data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"))
@@ -211,7 +260,9 @@ def validate_language(answer, output_language, protected_literals=None):
     if output_language == "auto":
         return
     prose = strip_quoted_literals(answer["rewritten_prompt"], protected_literals)
-    contains_han = bool(re.search(r"[\u4e00-\u9fff]", prose))
+    if _OTHER_SCRIPT.search(prose):
+        raise ValueError("rewritten descriptive prose contains non-target writing scripts")
+    contains_han = bool(_HAN.search(prose))
     if output_language == "English" and contains_han:
         raise ValueError("rewritten descriptive prose is not fully English")
     if output_language == "中文" and not contains_han:
@@ -243,6 +294,19 @@ _OPAQUE_BACKDROP = re.compile(
     r"(?:white|black|gray|grey|beige|brown|blue|red|green|yellow|checkerboard)\b|"
     r"(?:纯白|白色|黑色|灰色|米色|棋盘格)背景|"
     r"背景(?:是|为|呈)?[^。！？,.]{0,12}(?:纯白|白色|黑色|灰色|米色|棋盘格)", re.I)
+_CONTEXT_BACKDROP = re.compile(
+    r"\b(?:against|in\s+front\s+of|on)\s+(?:a|an|the)\s+"
+    r"(?:(?!with\b|and\b|that\b|which\b|wearing\b)[a-z-]+\s+){1,6}background\b", re.I)
+_BACKGROUND_ONLY_SENTENCE = re.compile(
+    r"^\s*(?:(?:the|this)\s+)?background\s+(?:is|appears|looks)\s+"
+    r"(?:(?:a|an|the)\s+)?"
+    r"(?:(?:pure|plain|solid|warm|light|dark|pale|soft|muted|bright|clean|neutral|"
+    r"simple|empty|white|black|grey|gray|beige|brown|blue|red|green|yellow|brick|"
+    r"stone|wooden|checkerboard)\s+){0,4}"
+    r"(?:surface|wall|backdrop|color|colour|gradient|pattern|field|canvas|white|"
+    r"black|grey|gray|beige|brown|blue|red|green|yellow)\s*[.!?]?\s*$|"
+    r"^\s*(?:画面|图像|图片)?背景(?:是|为|呈)(?:纯白|白色|黑色|灰色|米色|"
+    r"棋盘格|灰白棋盘格)\s*[。！？]?\s*$", re.I)
 
 
 def normalize_opaque_background_phrases(prompt, protected_literals=None):
@@ -252,7 +316,16 @@ def normalize_opaque_background_phrases(prompt, protected_literals=None):
             return match.group()
         return "透明背景" if re.search(r"[\u4e00-\u9fff]", match.group()) else "transparent background"
 
-    return replace_unquoted(_OPAQUE_BACKDROP, prompt, replace, protected_literals)
+    prompt, replacements = replace_unquoted(_OPAQUE_BACKDROP, prompt, replace, protected_literals)
+    def replace_context(match, _):
+        if re.search(r"\btransparent\s+background$", match.group(), re.I):
+            return match.group()
+        return "against a transparent background"
+
+    prompt, contextual = replace_unquoted(_CONTEXT_BACKDROP, prompt,
+                                          replace_context,
+                                          protected_literals)
+    return prompt, replacements + contextual
 
 
 def normalize_transparent_margins(prompt, protected_literals=None):
@@ -287,6 +360,11 @@ def validate_mode(answer, aspect_ratio, transparent_rgba, protected_literals=Non
         if re.search(r"\b(?:white|opaque)\s+(?:empty\s+)?margins?\b|"
                      r"白色留白|不透明留白|白色空白边缘", prose, re.I):
             errors.append("prompt describes opaque margins")
+        for match in re.finditer(r"\bshadow\b.{0,80}\bground\b|阴影.{0,40}地面", prose, re.I):
+            prefix = prose[max(0, match.start() - 20):match.start()]
+            if not re.search(r"\b(?:no|without|not)\s+$|(?:没有|无|不要)$", prefix, re.I):
+                errors.append("prompt describes a ground shadow")
+                break
         for sentence in re.split(r"[.!?。！？]", prose):
             if (re.search(r"\bbackground\b|背景", sentence, re.I)
                     and not transparent_background_clause(sentence)):
@@ -302,9 +380,9 @@ def remove_opaque_background_sentences(prompt, protected_literals=None):
     for sentence in re.split(r"(?<=[.!?。！？])\s*", prompt):
         descriptive = mask_quoted_literals(sentence, protected_literals)
         has_backdrop = re.search(r"\bbackground\b|背景", descriptive, re.I)
-        has_ground_shadow = re.search(r"\bshadow\b.{0,80}\bground\b|阴影.{0,40}地面", descriptive, re.I)
         safe = transparent_background_clause(descriptive) if has_backdrop else False
-        if ((has_backdrop and not safe) or (has_ground_shadow and not safe)) and not quoted_literals(sentence, protected_literals):
+        if (has_backdrop and not safe and _BACKGROUND_ONLY_SENTENCE.fullmatch(descriptive)
+                and not quoted_literals(sentence, protected_literals)):
             removed += 1
         elif sentence.strip():
             kept.append(sentence.strip())
@@ -353,11 +431,8 @@ class LocalServer:
 
     def start(self, model, mmproj, context, gpu_layers):
         with self.lock:
-            def signature(path):
-                stat = path.stat()
-                return str(path.resolve()), stat.st_size, stat.st_mtime_ns
-
-            profile = (signature(model), signature(mmproj) if mmproj else None, context, gpu_layers)
+            profile = (file_signature(model), file_signature(mmproj) if mmproj else None,
+                       context, gpu_layers)
             if self.process is not None and self.process.poll() is None and self.profile == profile:
                 try:
                     with urlopen(f"http://127.0.0.1:{self.port}/health", timeout=2) as response:
@@ -487,7 +562,7 @@ class LocalServer:
                         if output_language == "auto":
                             raise
                         answer["rewritten_prompt"], translation_usage = self._translate_prose(
-                            answer["rewritten_prompt"], output_language, seed, timeout, exact_literals)
+                            answer["rewritten_prompt"], output_language, seed, timeout)
                         translation_fallback = True
                         if transparent_rgba:
                             answer["rewritten_prompt"], normalized_more_backdrop = (
@@ -520,7 +595,7 @@ class LocalServer:
                     payload["messages"][0]["content"] = system
             raise AssertionError("unreachable")
 
-    def _translate_prose(self, prose, output_language, seed, timeout, exact_literals=None):
+    def _translate_prose(self, prose, output_language, seed, timeout):
         target = "Simplified Chinese" if output_language == "中文" else "English"
         if output_language == "中文":
             request_text = (
@@ -548,9 +623,10 @@ class LocalServer:
         translated = choice["message"].get("content") or ""
         translated = re.sub(r"^\s*<think>[\s\S]*?</think>\s*", "", translated)
         translated = re.sub(r"(?m)^\s*#{1,6}\s*", "", translated).strip()
-        for literal in quoted_literals(prose, exact_literals):
-            if literal not in translated:
-                raise ValueError(f"translation changed exact quoted image text: {literal!r}")
+        required_quotes = quoted_literals(prose)
+        actual_quotes = quoted_literals(translated)
+        if actual_quotes != required_quotes:
+            raise ValueError("translation changed the order or content of exact quoted image text")
         if not translated:
             raise ValueError("translation fallback returned empty text")
         return translated, result.get("usage", {})

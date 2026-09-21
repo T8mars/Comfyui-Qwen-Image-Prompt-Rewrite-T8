@@ -7,7 +7,7 @@ import time
 
 import torch
 
-from .pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, SERVER, local_models,
+from .pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, SERVER, file_signature, local_models,
                          pick_mmproj, prepare_images, quoted_literals, resolve_model, strip_quoted_literals)
 
 
@@ -95,8 +95,7 @@ class QwenPERewrite:
                     raise
                 fingerprint.update(f"unresolved-model:{name}".encode())
                 continue
-            stat = path.stat()
-            fingerprint.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+            fingerprint.update(repr(file_signature(path)).encode())
         if task in ("auto", "edit"):
             try:
                 path = pick_mmproj(edit_model, vision_model)
@@ -105,8 +104,7 @@ class QwenPERewrite:
                     raise
                 fingerprint.update(f"unresolved-vision:{edit_model}:{vision_model}".encode())
             else:
-                stat = path.stat()
-                fingerprint.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+                fingerprint.update(repr(file_signature(path)).encode())
         return fingerprint.hexdigest()
 
     def rewrite(self, user_prompt, task, aspect_ratio, output_language, transparent_rgba,
