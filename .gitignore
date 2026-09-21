@@ -1,0 +1,13 @@
+roadmap.md
+PLAN.md
+models/
+runtime/
+evaluation/fixtures/
+download*.log
+*.log
+hf_publish/
+*.gguf
+*.part
+*.download
+__pycache__/
+.pytest_cache/

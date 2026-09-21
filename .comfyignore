@@ -1,0 +1,12 @@
+# Development and evaluation files are available in GitHub but not needed at runtime.
+tests/
+evaluation/
+tools/build_*.py
+tools/collect_*.py
+tools/compare_*.py
+tools/create_*.py
+tools/downstream_*.py
+tools/prepare_*.py
+tools/probe_*.py
+tools/smoke_*.py
+tools/test_*.py

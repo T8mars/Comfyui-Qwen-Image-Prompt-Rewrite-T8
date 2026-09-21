@@ -1,0 +1,420 @@
+{
+  "id": "c262fbf9-cb9f-5643-ba48-c156c823236f",
+  "revision": 0,
+  "last_node_id": 7,
+  "last_link_id": 6,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "QwenPERewriteT8",
+      "pos": [
+        380,
+        220
+      ],
+      "size": [
+        440,
+        520
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "image_1",
+          "name": "image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_2",
+          "name": "image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_3",
+          "name": "image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_4",
+          "name": "image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_5",
+          "name": "image_5",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_6",
+          "name": "image_6",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_7",
+          "name": "image_7",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_8",
+          "name": "image_8",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_9",
+          "name": "image_9",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "image_10",
+          "name": "image_10",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "user_prompt",
+          "name": "user_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "user_prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "task",
+          "name": "task",
+          "type": "COMBO",
+          "widget": {
+            "name": "task"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "t2i_model",
+          "name": "t2i_model",
+          "type": "COMBO",
+          "widget": {
+            "name": "t2i_model"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "edit_model",
+          "name": "edit_model",
+          "type": "COMBO",
+          "widget": {
+            "name": "edit_model"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "vision_model",
+          "name": "vision_model",
+          "type": "COMBO",
+          "widget": {
+            "name": "vision_model"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "model_lifetime",
+          "name": "model_lifetime",
+          "type": "COMBO",
+          "widget": {
+            "name": "model_lifetime"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "seed",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "rewritten_prompt",
+          "name": "rewritten_prompt",
+          "type": "STRING",
+          "links": [
+            3
+          ]
+        },
+        {
+          "localized_name": "pe_result",
+          "name": "pe_result",
+          "type": "PE_RESULT",
+          "links": [
+            4
+          ]
+        },
+        {
+          "localized_name": "diagnostics",
+          "name": "diagnostics",
+          "type": "STRING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenPERewriteT8"
+      },
+      "widgets_values": [
+        "一只金色蝴蝶，翅膀有细致花纹，主体居中，背景完全透明。",
+        "auto",
+        "4:5",
+        "中文",
+        true,
+        "Qwen-Image-2.1-PE-T2I.Q4_K_M.gguf",
+        "Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf",
+        "Auto",
+        "after_run",
+        42,
+        "fixed"
+      ],
+      "widgets_values_named": {
+        "user_prompt": "一只金色蝴蝶，翅膀有细致花纹，主体居中，背景完全透明。",
+        "task": "auto",
+        "t2i_model": "Qwen-Image-2.1-PE-T2I.Q4_K_M.gguf",
+        "edit_model": "Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf",
+        "vision_model": "Auto",
+        "model_lifetime": "after_run",
+        "seed": 42,
+        "control_after_generate": "fixed",
+        "aspect_ratio": "4:5",
+        "output_language": "中文",
+        "transparent_rgba": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "QwenPECanvasT8",
+      "pos": [
+        900,
+        405
+      ],
+      "size": [
+        310,
+        130
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pe_result",
+          "type": "PE_RESULT",
+          "link": 4
+        },
+        {
+          "name": "resolution",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "follow_input_size",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": null
+        },
+        {
+          "name": "ratio_source",
+          "type": "STRING",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenPECanvasT8"
+      },
+      "widgets_values": [
+        1024,
+        true
+      ],
+      "widgets_values_named": {
+        "resolution": 1024,
+        "follow_input_size": true
+      }
+    },
+    {
+      "id": 5,
+      "type": "PreviewAny",
+      "pos": [
+        1330,
+        180
+      ],
+      "size": [
+        400,
+        160
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "title": "Rewritten prompt"
+    },
+    {
+      "id": 6,
+      "type": "PreviewAny",
+      "pos": [
+        1330,
+        445
+      ],
+      "size": [
+        400,
+        160
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "title": "Model and run diagnostics"
+    },
+    {
+      "id": 7,
+      "type": "PreviewAny",
+      "pos": [
+        1330,
+        650
+      ],
+      "size": [
+        400,
+        160
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "title": "Canvas source"
+    }
+  ],
+  "links": [
+    [
+      4,
+      1,
+      1,
+      4,
+      0,
+      "PE_RESULT"
+    ],
+    [
+      3,
+      1,
+      0,
+      5,
+      0,
+      "STRING"
+    ],
+    [
+      5,
+      1,
+      2,
+      6,
+      0,
+      "STRING"
+    ],
+    [
+      6,
+      4,
+      3,
+      7,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
