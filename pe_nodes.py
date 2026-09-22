@@ -12,7 +12,7 @@ from .pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, SERVER, file_signature, loca
 
 
 ASPECT_RATIOS = ["auto", "1:1", "1:2", "2:3", "3:4", "4:5", "16:9",
-                 "21:9", "9:21", "5:4", "4:3", "2:1"]
+                 "9:16", "21:9", "9:21", "5:4", "4:3", "2:1"]
 
 
 def _resolved_language(selection, rewritten_prompt, user_prompt=None):

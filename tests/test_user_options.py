@@ -27,6 +27,7 @@ class UserOptionTests(unittest.TestCase):
     def test_dropdowns_contain_requested_choices(self):
         required = QwenPERewrite.INPUT_TYPES()["required"]
         self.assertEqual(required["aspect_ratio"][0], ASPECT_RATIOS)
+        self.assertIn("9:16", required["aspect_ratio"][0])
         self.assertEqual(required["output_language"][0], ["auto", "中文", "English"])
         self.assertEqual(required["transparent_rgba"][0], "BOOLEAN")
 
