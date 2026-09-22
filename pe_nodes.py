@@ -129,7 +129,7 @@ class QwenPERewrite:
         mmproj = pick_mmproj(model_name, vision_model) if actual_task == "edit" else None
         encoded, dimensions = prepare_images(images)
         image_fingerprints = [hashlib.sha256(value.encode("ascii")).hexdigest() for value in encoded]
-        context = 16384 if not images else (32768 if len(images) <= 5 else 65536)
+        context = 24576 if not images else (49152 if len(images) <= 5 else 65536)
         try:
             import comfy.model_management as memory
             memory.free_memory(12 * 1024**3, memory.get_torch_device())
@@ -175,6 +175,7 @@ class QwenPERewrite:
             "usage": info["usage"],
             "format_retries": info.get("format_retries", 0),
             "first_format_error": info.get("first_format_error"),
+            "truncation_retry": info.get("truncation_retry", False),
             "removed_background_sentences": info.get("removed_background_sentences", 0),
             "normalized_background_phrases": info.get("normalized_background_phrases", 0),
             "normalized_margin_phrases": info.get("normalized_margin_phrases", 0),

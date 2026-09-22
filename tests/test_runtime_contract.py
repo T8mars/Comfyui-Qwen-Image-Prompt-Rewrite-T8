@@ -280,6 +280,40 @@ class RuntimeContractTests(unittest.TestCase):
                                         [], 42, 1, aspect_ratio="4:5", transparent_rgba=True)
         self.assertIn('"white background"', actual["rewritten_prompt"])
 
+    def test_truncated_completion_retries_without_thinking_then_validates(self):
+        server = LocalServer()
+        server.profile = ("model", None, 24576, 99)
+        requests = []
+        def reply(payload, _timeout):
+            requests.append((payload["max_tokens"],
+                             payload["chat_template_kwargs"]["enable_thinking"],
+                             payload["messages"][0]["content"]))
+            if len(requests) == 1:
+                return {"choices": [{"message": {"content": "unfinished"},
+                                     "finish_reason": "length"}],
+                        "usage": {"prompt_tokens": 3000, "completion_tokens": 16256}}
+            return {"choices": [{"message": {"content": json.dumps({
+                "rewritten_prompt": "A blue cat on a table.", "wh_ratio": "1:1"})},
+                                 "finish_reason": "stop"}], "usage": {}}
+        with patch.object(server, "_post_completion", side_effect=reply):
+            answer, info = server.complete("t2i", "A blue cat", [], 42, 1)
+        self.assertEqual(answer["rewritten_prompt"], "A blue cat on a table.")
+        self.assertEqual([(limit, thinking) for limit, thinking, _ in requests],
+                         [(16256, True), (16256, False)])
+        self.assertIn("Return only the final JSON object", requests[1][2])
+        self.assertTrue(info["truncation_retry"])
+        self.assertEqual(info["format_retries"], 1)
+
+        with patch.object(server, "_post_completion", return_value={
+                "choices": [{"message": {"content": "unfinished"},
+                             "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 3000, "completion_tokens": 16256}}) as completion:
+            with self.assertRaisesRegex(ValueError, "retry without thinking was also truncated") as error:
+                server.complete("t2i", "A blue cat", [], 42, 1)
+        self.assertEqual(completion.call_count, 2)
+        self.assertIn("context=24576", str(error.exception))
+        self.assertIn("completion_tokens=16256", str(error.exception))
+
     def test_translation_requires_exact_text_to_remain_quoted(self):
         server = LocalServer()
         result = {"choices": [{"message": {"content":

@@ -528,17 +528,38 @@ class LocalServer:
                 "top_k": 20,
                 "min_p": 0.0,
                 "presence_penalty": 1.5 if task == "t2i" else 0.0,
-                "max_tokens": 8192 if task == "t2i" else 12288,
+                "max_tokens": 16256 if task == "t2i" else 24000,
                 "seed": seed,
                 "chat_template_kwargs": {"enable_thinking": True},
                 "stream": False,
             }
             first_error = None
+            truncation_retry = False
             for attempt in range(2):
                 result = self._post_completion(payload, timeout)
                 choice = result["choices"][0]
                 if choice.get("finish_reason") == "length":
-                    raise ValueError("model response was truncated at max_tokens")
+                    usage = result.get("usage") or {}
+                    counts = ", ".join(f"{key}={usage[key]}" for key in
+                                       ("prompt_tokens", "completion_tokens") if key in usage)
+                    context = self.profile[2] if self.profile else None
+                    limits = f"max_tokens={payload['max_tokens']}"
+                    if context:
+                        limits += f", context={context}"
+                    if counts:
+                        limits += f", {counts}"
+                    error = f"model response reached the generation or context limit ({limits})"
+                    if attempt:
+                        suffix = ("; retry without thinking was also truncated" if truncation_retry
+                                  else "; format-retry response was truncated")
+                        raise ValueError(error + suffix)
+                    first_error = error
+                    truncation_retry = True
+                    payload["chat_template_kwargs"] = {"enable_thinking": False}
+                    payload["messages"][0]["content"] = (
+                        system + "\n\nThe previous response was truncated. Return only the final "
+                        "JSON object with the required fields; do not include reasoning or commentary.")
+                    continue
                 raw = choice["message"].get("content") or ""
                 try:
                     answer = parse_answer(raw, task, len(images))
@@ -580,6 +601,7 @@ class LocalServer:
                     return answer, {"finish_reason": choice.get("finish_reason"),
                                     "usage": result.get("usage", {}),
                                     "format_retries": attempt, "first_format_error": first_error,
+                                    "truncation_retry": truncation_retry,
                                     "removed_background_sentences": removed_background_sentences,
                                     "normalized_background_phrases": normalized_background_phrases,
                                     "normalized_margin_phrases": normalized_margin_phrases,
