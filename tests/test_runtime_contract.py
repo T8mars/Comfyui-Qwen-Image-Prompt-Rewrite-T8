@@ -68,6 +68,11 @@ class RuntimeContractTests(unittest.TestCase):
             validate_references({"rewritten_prompt": "Use <image1>."}, "edit", 2)
         with self.assertRaises(ValueError):
             validate_references({"rewritten_prompt": "Use <image01> and <image2>."}, "edit", 2)
+        for prompt, task, count in (("Repaint <IMAGE2> blue.", "edit", 1),
+                                    ("A poster of <IMAGE1>.", "t2i", 0),
+                                    ("Use < Image1> and <image2>.", "edit", 2)):
+            with self.subTest(prompt=prompt), self.assertRaises(ValueError):
+                validate_references({"rewritten_prompt": prompt}, task, count)
 
     def test_ratio_and_transparency_conflicts_are_rejected(self):
         with self.assertRaises(ValueError):
@@ -87,6 +92,18 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("detailed wings", prose)
         self.assertNotIn("beige", prose)
         self.assertIn("transparent background", prose)
+
+    def test_transparency_cleanup_preserves_numbers_and_exact_text(self):
+        prompt = 'A 1.5 kg product reads "SALE!TODAY" on a transparent background.'
+        self.assertEqual(remove_opaque_background_sentences(prompt, {"SALE!TODAY"}),
+                         (prompt, 0))
+        with_backdrop = ('A 1.5 kg product reads "SALE!TODAY". '
+                         'The background is a warm beige surface. Keep its label unchanged.')
+        cleaned, removed = remove_opaque_background_sentences(
+            with_backdrop, {"SALE!TODAY"})
+        self.assertEqual(removed, 1)
+        self.assertEqual(cleaned, 'A 1.5 kg product reads "SALE!TODAY". '
+                         'Keep its label unchanged.')
 
     def test_explicit_chinese_rejects_stray_english_but_preserves_literal_text(self):
         validate_language({"rewritten_prompt": "一张海报，标题写成\"FRESH BREAD\"。"}, "中文")
@@ -153,6 +170,16 @@ class RuntimeContractTests(unittest.TestCase):
         cleaned, _ = prepare_images([tiny])
         with Image.open(io.BytesIO(base64.b64decode(cleaned[0].split(",", 1)[1]))) as reduced:
             self.assertEqual(reduced.convert("RGB").getpixel((0, 0)), (255, 255, 255))
+
+    def test_rgb_downscale_sanitizes_non_finite_pixels_before_filtering(self):
+        image = torch.ones((1, 1, 8192, 3))
+        image[0, 0, 4096, 0] = float("nan")
+        encoded, _ = prepare_images([image])
+        self.assertTrue(torch.isnan(image[0, 0, 4096, 0]))
+        with Image.open(io.BytesIO(base64.b64decode(encoded[0].split(",", 1)[1]))) as reduced:
+            center = reduced.convert("RGB").getpixel((2048, 0))
+        self.assertGreater(center[0], 0)
+        self.assertEqual(center[1:], (255, 255))
 
     def test_model_discovery_includes_additional_local_gguf(self):
         with tempfile.TemporaryDirectory() as temp:

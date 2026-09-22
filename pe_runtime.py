@@ -189,8 +189,11 @@ def prepare_images(images):
         if source.shape[1] == 4:
             source = _resize_rgba_white(source, target)
         elif target != (height, width):
-            source = interpolate(source, size=target, mode="bilinear", align_corners=False,
-                                 antialias=source.dtype in (torch.float32, torch.float64))
+            # Sanitize before interpolation: one non-finite RGB source pixel
+            # otherwise contaminates multiple output pixels while filtering.
+            clean = source.float().nan_to_num(nan=0.0, posinf=1.0, neginf=0.0).clamp_(0, 1)
+            source = interpolate(clean, size=target, mode="bilinear", align_corners=False,
+                                 antialias=True)
         scaled = source[0].permute(1, 2, 0).float().nan_to_num(nan=0.0, posinf=1.0, neginf=0.0)
         pixels = np.clip(scaled.cpu().numpy() * 255.0,
                          0, 255).astype(np.uint8)
@@ -250,7 +253,9 @@ def parse_answer(raw, task, image_count):
 
 def validate_references(answer, task, image_count, protected_literals=None):
     prose = strip_quoted_literals(answer["rewritten_prompt"], protected_literals)
-    references = set(re.findall(r"<image[^>]*>", prose))
+    # Match malformed case/spacing variants too, then require exact canonical
+    # tags below. Otherwise <IMAGE2> can bypass the image-count contract.
+    references = set(re.findall(r"<\s*image[^>]*>", prose, flags=re.IGNORECASE))
     expected = {f"<image{i}>" for i in range(1, image_count + 1)} if image_count >= 2 else set()
     if references != expected and not (image_count == 1 and references == {"<image1>"}):
         allowed = "[] or ['<image1>']" if image_count == 1 else str(sorted(expected))
@@ -388,16 +393,32 @@ def validate_mode(answer, aspect_ratio, transparent_rgba, protected_literals=Non
 def remove_opaque_background_sentences(prompt, protected_literals=None):
     kept = []
     removed = 0
-    for sentence in re.split(r"(?<=[.!?。！？])\s*", prompt):
+    # Keep original slices: rejoining split text would insert spaces into
+    # decimals (1.5) and exact image text ("SALE!TODAY"). Quoted punctuation
+    # is masked so it cannot become a sentence boundary.
+    masked = mask_quoted_literals(prompt)
+    boundaries = []
+    for match in re.finditer(r"[.!?。！？]", masked):
+        end = match.end()
+        while end < len(prompt) and prompt[end].isspace():
+            end += 1
+        if not boundaries or end > boundaries[-1]:
+            boundaries.append(end)
+    if not boundaries or boundaries[-1] != len(prompt):
+        boundaries.append(len(prompt))
+    start = 0
+    for end in boundaries:
+        sentence = prompt[start:end]
+        start = end
         descriptive = mask_quoted_literals(sentence, protected_literals)
         has_backdrop = re.search(r"\bbackground\b|背景", descriptive, re.I)
         safe = transparent_background_clause(descriptive) if has_backdrop else False
         if (has_backdrop and not safe and _BACKGROUND_ONLY_SENTENCE.fullmatch(descriptive)
                 and not quoted_literals(sentence, protected_literals)):
             removed += 1
-        elif sentence.strip():
-            kept.append(sentence.strip())
-    return " ".join(kept).strip(), removed
+        else:
+            kept.append(sentence)
+    return "".join(kept).strip(), removed
 
 
 class LocalServer:
