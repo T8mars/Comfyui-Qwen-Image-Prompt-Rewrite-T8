@@ -31,6 +31,27 @@ class UserOptionTests(unittest.TestCase):
         self.assertEqual(required["output_language"][0], ["auto", "中文", "English"])
         self.assertEqual(required["transparent_rgba"][0], "BOOLEAN")
 
+    def test_connected_none_ports_do_not_count_as_reference_images(self):
+        answer = {"rewritten_prompt": "Change the source image to blue.",
+                  "wh_ratio": "", "ratio_follow": "<image1>"}
+        info = {"finish_reason": "stop", "usage": {}}
+        images = {"image_1": object(), **{f"image_{i}": None for i in range(2, 10)}}
+        with (patch.dict(sys.modules, {"comfy": None, "comfy.model_management": None}),
+              patch("qwen_pe_test_package.pe_nodes.resolve_model", return_value=Path("edit.gguf")),
+              patch("qwen_pe_test_package.pe_nodes.pick_mmproj", return_value=Path("vision.gguf")),
+              patch("qwen_pe_test_package.pe_nodes.prepare_images",
+                    return_value=(["data:image/png;base64,AA=="], [[16, 16]])),
+              patch("qwen_pe_test_package.pe_nodes.SERVER.start"),
+              patch("qwen_pe_test_package.pe_nodes.SERVER.complete",
+                    return_value=(answer, info)) as complete,
+              patch("qwen_pe_test_package.pe_nodes.SERVER.stop")):
+            _, result, _ = QwenPERewrite().rewrite(
+                "Change the source image to blue.", "auto", "auto", "auto", False,
+                DEFAULT_T2I, "edit.gguf", "Auto", "after_run", 42, **images)
+        self.assertEqual(result["task"], "edit")
+        self.assertEqual(result["image_dimensions"], [[16, 16]])
+        self.assertEqual(len(complete.call_args.args[2]), 1)
+
     def test_transparent_prompt_uses_selected_language_and_ratio(self):
         chinese = _format_prompt("一只蝴蝶。", True, "zh")
         english = _format_prompt("A butterfly.", True, "en")

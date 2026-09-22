@@ -260,6 +260,16 @@ def validate_references(answer, task, image_count, protected_literals=None):
         raise ValueError(detail)
 
 
+def normalize_single_image_references(prompt, output_language):
+    """Replace unambiguous source-image tags without touching quoted image text."""
+    prose = strip_quoted_literals(prompt)
+    chinese = (output_language == "中文" or
+               (output_language == "auto" and bool(_HAN.search(prose))))
+    replacement = "原图" if chinese else "the source image"
+    return replace_unquoted(re.compile(r"<image(?:1)?>"), prompt,
+                            lambda _match, _masked: replacement)
+
+
 def validate_language(answer, output_language, protected_literals=None):
     if output_language == "auto":
         return
@@ -574,6 +584,11 @@ class LocalServer:
                 raw = choice["message"].get("content") or ""
                 try:
                     answer = parse_answer(raw, task, len(images))
+                    normalized_single_image_tags = 0
+                    if task == "edit" and len(images) == 1:
+                        answer["rewritten_prompt"], normalized_single_image_tags = (
+                            normalize_single_image_references(answer["rewritten_prompt"],
+                                                              output_language))
                     removed_background_sentences = 0
                     if transparent_rgba:
                         answer["rewritten_prompt"], normalized_background_phrases = (
@@ -596,6 +611,11 @@ class LocalServer:
                         answer["rewritten_prompt"], translation_usage = self._translate_prose(
                             answer["rewritten_prompt"], output_language, seed, timeout)
                         translation_fallback = True
+                        if task == "edit" and len(images) == 1:
+                            answer["rewritten_prompt"], normalized_more_tags = (
+                                normalize_single_image_references(answer["rewritten_prompt"],
+                                                                  output_language))
+                            normalized_single_image_tags += normalized_more_tags
                         if transparent_rgba:
                             answer["rewritten_prompt"], normalized_more_backdrop = (
                                 normalize_opaque_background_phrases(answer["rewritten_prompt"], exact_literals))
@@ -613,6 +633,7 @@ class LocalServer:
                                     "usage": result.get("usage", {}),
                                     "format_retries": attempt, "first_format_error": first_error,
                                     "truncation_retry": truncation_retry,
+                                    "normalized_single_image_tags": normalized_single_image_tags,
                                     "removed_background_sentences": removed_background_sentences,
                                     "normalized_background_phrases": normalized_background_phrases,
                                     "normalized_margin_phrases": normalized_margin_phrases,

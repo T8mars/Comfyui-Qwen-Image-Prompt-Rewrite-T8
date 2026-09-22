@@ -176,6 +176,7 @@ class QwenPERewrite:
             "format_retries": info.get("format_retries", 0),
             "first_format_error": info.get("first_format_error"),
             "truncation_retry": info.get("truncation_retry", False),
+            "normalized_single_image_tags": info.get("normalized_single_image_tags", 0),
             "removed_background_sentences": info.get("removed_background_sentences", 0),
             "normalized_background_phrases": info.get("normalized_background_phrases", 0),
             "normalized_margin_phrases": info.get("normalized_margin_phrases", 0),

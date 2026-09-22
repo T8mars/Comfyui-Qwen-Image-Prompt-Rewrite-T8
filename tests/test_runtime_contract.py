@@ -13,7 +13,8 @@ import torch
 from PIL import Image
 
 from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ,
-                        LocalServer, file_signature, local_models, parse_answer, pick_mmproj,
+                        LocalServer, file_signature, local_models,
+                        normalize_single_image_references, parse_answer, pick_mmproj,
                         prepare_images, quoted_literals,
                         remove_opaque_background_sentences, validate_language, validate_mode,
                         validate_references)
@@ -319,12 +320,12 @@ class RuntimeContractTests(unittest.TestCase):
             ("t2i", [], {"rewritten_prompt": "Show <image> as a flower.", "wh_ratio": "1:1"},
              {"rewritten_prompt": "A red flower fills the frame.", "wh_ratio": "1:1"},
              "There are no input images"),
-            ("edit", ["image-data"],
-             {"rewritten_prompt": "Change <image> to blue.", "wh_ratio": "",
+            ("edit", ["image-a", "image-b"],
+             {"rewritten_prompt": "Blend <image> with <image2>.", "wh_ratio": "",
               "ratio_follow": "<image1>"},
-             {"rewritten_prompt": "Change the input image to blue.", "wh_ratio": "",
+             {"rewritten_prompt": "Blend <image1> with <image2>.", "wh_ratio": "",
               "ratio_follow": "<image1>"},
-             "There is one input image"),
+             "Do not use the unnumbered <image> tag"),
         )
         for task, images, invalid, valid, rule in cases:
             with self.subTest(task=task):
@@ -344,6 +345,26 @@ class RuntimeContractTests(unittest.TestCase):
                 self.assertIn(rule, requests[1][1])
                 self.assertIn("<image>", info["first_format_error"])
                 self.assertEqual(info["format_retries"], 1)
+
+    def test_single_image_bare_tag_is_normalized_without_retry(self):
+        english, count = normalize_single_image_references(
+            'Recolor <image> and leave the label "<image1>" untouched.', "English")
+        self.assertEqual(count, 1)
+        self.assertEqual(english,
+                         'Recolor the source image and leave the label "<image1>" untouched.')
+        chinese, count = normalize_single_image_references("把<image1>中的猫改为蓝色。", "中文")
+        self.assertEqual((chinese, count), ("把原图中的猫改为蓝色。", 1))
+        server = LocalServer()
+        response = {"choices": [{"message": {"content": json.dumps({
+            "rewritten_prompt": "Change <image> to blue.", "wh_ratio": "",
+            "ratio_follow": "<image1>"})}, "finish_reason": "stop"}], "usage": {}}
+        with patch.object(server, "_post_completion", return_value=response) as completion:
+            answer, info = server.complete("edit", "Change the image to blue.",
+                                           ["image-data"], 42, 1)
+        self.assertEqual(completion.call_count, 1)
+        self.assertEqual(answer["rewritten_prompt"], "Change the source image to blue.")
+        self.assertEqual(info["normalized_single_image_tags"], 1)
+        self.assertEqual(info["format_retries"], 0)
 
     def test_translation_requires_exact_text_to_remain_quoted(self):
         server = LocalServer()
