@@ -253,7 +253,11 @@ def validate_references(answer, task, image_count, protected_literals=None):
     references = set(re.findall(r"<image[^>]*>", prose))
     expected = {f"<image{i}>" for i in range(1, image_count + 1)} if image_count >= 2 else set()
     if references != expected:
-        raise ValueError(f"image references in rewritten_prompt are {sorted(references)}, expected {sorted(expected)}")
+        detail = (f"image references in rewritten_prompt are {sorted(references)}, "
+                  f"expected {sorted(expected)} for {task} with {image_count} input image(s)")
+        if "<image>" in references:
+            detail += "; <image> is an invalid unnumbered placeholder"
+        raise ValueError(detail)
 
 
 def validate_language(answer, output_language, protected_literals=None):
@@ -492,13 +496,20 @@ class LocalServer:
             system_name = "system_prompt_t2i.txt" if task == "t2i" else "system_prompt_edit.txt"
             system = (ROOT / "prompts" / system_name).read_text(encoding="utf-8").strip()
             content = [{"type": "image_url", "image_url": {"url": value}} for value in images]
-            if len(images) >= 2:
+            if not images:
+                reference_rule = ("There are no input images. Do not write <image>, "
+                                  "<image1>, or any other image-reference tag in rewritten_prompt; "
+                                  "describe only the finished image.")
+            elif len(images) >= 2:
                 tags = "、".join(f"<image{i}>" for i in range(1, len(images) + 1))
-                system += (f"\n\nRuntime image-reference rule: The rewritten_prompt must explicitly use every "
-                           f"image tag from {tags}, each for its matching input image; omit none.")
-            elif len(images) == 1:
-                system += ("\n\nRuntime image-reference rule: There is one input image. Do not put "
-                           "<image1> or any numbered image tag in rewritten_prompt; refer to it naturally.")
+                reference_rule = (f"The rewritten_prompt must explicitly use every image tag "
+                                  f"from {tags}, each for its matching input image; omit none. "
+                                  "Do not use the unnumbered <image> tag.")
+            else:
+                reference_rule = ("There is one input image. Do not put <image>, <image1>, "
+                                  "or any other image-reference tag in rewritten_prompt; "
+                                  "refer to the input image naturally.")
+            system += "\n\nRuntime image-reference rule: " + reference_rule
             if output_language != "auto":
                 language = "English" if output_language == "English" else "Chinese"
                 system += (f"\n\nUser-selected language override: Write all descriptive prose of "
@@ -613,8 +624,11 @@ class LocalServer:
                     first_error = str(exc)
                     system += ("\n\nThe previous output failed validation: " + first_error +
                                ". Retry the same user request and satisfy all JSON, language, "
-                               "aspect-ratio, and image-reference constraints.")
+                               "aspect-ratio, and image-reference constraints. " +
+                               reference_rule + " Return only the final JSON object, "
+                               "without reasoning or commentary.")
                     payload["messages"][0]["content"] = system
+                    payload["chat_template_kwargs"] = {"enable_thinking": False}
             raise AssertionError("unreachable")
 
     def _translate_prose(self, prose, output_language, seed, timeout):

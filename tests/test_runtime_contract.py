@@ -314,6 +314,37 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("context=24576", str(error.exception))
         self.assertIn("completion_tokens=16256", str(error.exception))
 
+    def test_generic_image_tag_gets_image_count_specific_retry(self):
+        cases = (
+            ("t2i", [], {"rewritten_prompt": "Show <image> as a flower.", "wh_ratio": "1:1"},
+             {"rewritten_prompt": "A red flower fills the frame.", "wh_ratio": "1:1"},
+             "There are no input images"),
+            ("edit", ["image-data"],
+             {"rewritten_prompt": "Change <image> to blue.", "wh_ratio": "",
+              "ratio_follow": "<image1>"},
+             {"rewritten_prompt": "Change the input image to blue.", "wh_ratio": "",
+              "ratio_follow": "<image1>"},
+             "There is one input image"),
+        )
+        for task, images, invalid, valid, rule in cases:
+            with self.subTest(task=task):
+                server = LocalServer()
+                requests = []
+                def reply(payload, _timeout):
+                    requests.append((payload["chat_template_kwargs"]["enable_thinking"],
+                                     payload["messages"][0]["content"]))
+                    answer = invalid if len(requests) == 1 else valid
+                    return {"choices": [{"message": {"content": json.dumps(answer)},
+                                         "finish_reason": "stop"}], "usage": {}}
+                with patch.object(server, "_post_completion", side_effect=reply):
+                    answer, info = server.complete(task, "Change the image.", images, 42, 1)
+                self.assertEqual(answer, valid)
+                self.assertEqual([thinking for thinking, _ in requests], [True, False])
+                self.assertIn(rule, requests[0][1])
+                self.assertIn(rule, requests[1][1])
+                self.assertIn("<image>", info["first_format_error"])
+                self.assertEqual(info["format_retries"], 1)
+
     def test_translation_requires_exact_text_to_remain_quoted(self):
         server = LocalServer()
         result = {"choices": [{"message": {"content":
