@@ -113,9 +113,6 @@ class QwenPERewrite:
         if not user_prompt.strip():
             raise ValueError("Enter a text instruction; image-only requests need an explicit editing goal")
         present = sorted((int(key.split("_")[-1]), value) for key, value in kwargs.items() if value is not None)
-        indices = [index for index, _ in present]
-        if indices != list(range(1, len(indices) + 1)):
-            raise ValueError("Connect images consecutively from image_1; gaps would change <imageN> references")
         images = [value for _, value in present]
         if len(images) > 10:
             raise ValueError("At most 10 reference images are supported")
@@ -165,6 +162,7 @@ class QwenPERewrite:
             "output_language": language,
             "transparent_rgba": transparent_rgba,
             "image_dimensions": dimensions,
+            "image_input_ports": [f"image_{index}" for index, _ in present],
             "image_fingerprints": image_fingerprints,
             "model": model.name,
             "mmproj": mmproj.name if mmproj else "",

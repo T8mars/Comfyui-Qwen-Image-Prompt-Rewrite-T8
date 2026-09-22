@@ -50,7 +50,12 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_reference_contract(self):
         validate_references({"rewritten_prompt": "Use <image1> and <image2>."}, "edit", 2)
+        nine_tags = " ".join(f"<image{i}>" for i in range(1, 10))
+        validate_references({"rewritten_prompt": nine_tags}, "edit", 9)
+        with self.assertRaises(ValueError):
+            validate_references({"rewritten_prompt": nine_tags.replace("<image9>", "")}, "edit", 9)
         validate_references({"rewritten_prompt": "Preserve the original image."}, "edit", 1)
+        validate_references({"rewritten_prompt": "Preserve <image1>."}, "edit", 1)
         validate_references({"rewritten_prompt": 'Print "<image1>" on the poster.'}, "t2i", 0)
         validate_references({"rewritten_prompt": "Print '<image1>' on the poster."}, "t2i", 0)
         validate_references({"rewritten_prompt": 'Blend "<image1>" with "<image2>".'},
@@ -58,7 +63,7 @@ class RuntimeContractTests(unittest.TestCase):
         validate_references({"rewritten_prompt": 'Print "<image1>" on the poster.'},
                             "t2i", 0, {"<image1>"})
         with self.assertRaises(ValueError):
-            validate_references({"rewritten_prompt": "Use <image1>."}, "edit", 1)
+            validate_references({"rewritten_prompt": "Use <image>."}, "edit", 1)
         with self.assertRaises(ValueError):
             validate_references({"rewritten_prompt": "Use <image1>."}, "edit", 2)
         with self.assertRaises(ValueError):
@@ -348,12 +353,12 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_single_image_bare_tag_is_normalized_without_retry(self):
         english, count = normalize_single_image_references(
-            'Recolor <image> and leave the label "<image1>" untouched.', "English")
+            'Recolor <image> and leave the label "<image1>" untouched.')
         self.assertEqual(count, 1)
         self.assertEqual(english,
-                         'Recolor the source image and leave the label "<image1>" untouched.')
-        chinese, count = normalize_single_image_references("把<image1>中的猫改为蓝色。", "中文")
-        self.assertEqual((chinese, count), ("把原图中的猫改为蓝色。", 1))
+                         'Recolor <image1> and leave the label "<image1>" untouched.')
+        chinese, count = normalize_single_image_references("把<image>中的猫改为蓝色。")
+        self.assertEqual((chinese, count), ("把<image1>中的猫改为蓝色。", 1))
         server = LocalServer()
         response = {"choices": [{"message": {"content": json.dumps({
             "rewritten_prompt": "Change <image> to blue.", "wh_ratio": "",
@@ -362,7 +367,7 @@ class RuntimeContractTests(unittest.TestCase):
             answer, info = server.complete("edit", "Change the image to blue.",
                                            ["image-data"], 42, 1)
         self.assertEqual(completion.call_count, 1)
-        self.assertEqual(answer["rewritten_prompt"], "Change the source image to blue.")
+        self.assertEqual(answer["rewritten_prompt"], "Change <image1> to blue.")
         self.assertEqual(info["normalized_single_image_tags"], 1)
         self.assertEqual(info["format_retries"], 0)
 

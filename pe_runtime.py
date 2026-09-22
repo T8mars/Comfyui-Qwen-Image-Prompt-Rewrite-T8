@@ -252,22 +252,19 @@ def validate_references(answer, task, image_count, protected_literals=None):
     prose = strip_quoted_literals(answer["rewritten_prompt"], protected_literals)
     references = set(re.findall(r"<image[^>]*>", prose))
     expected = {f"<image{i}>" for i in range(1, image_count + 1)} if image_count >= 2 else set()
-    if references != expected:
+    if references != expected and not (image_count == 1 and references == {"<image1>"}):
+        allowed = "[] or ['<image1>']" if image_count == 1 else str(sorted(expected))
         detail = (f"image references in rewritten_prompt are {sorted(references)}, "
-                  f"expected {sorted(expected)} for {task} with {image_count} input image(s)")
+                  f"expected {allowed} for {task} with {image_count} input image(s)")
         if "<image>" in references:
             detail += "; <image> is an invalid unnumbered placeholder"
         raise ValueError(detail)
 
 
-def normalize_single_image_references(prompt, output_language):
-    """Replace unambiguous source-image tags without touching quoted image text."""
-    prose = strip_quoted_literals(prompt)
-    chinese = (output_language == "中文" or
-               (output_language == "auto" and bool(_HAN.search(prose))))
-    replacement = "原图" if chinese else "the source image"
-    return replace_unquoted(re.compile(r"<image(?:1)?>"), prompt,
-                            lambda _match, _masked: replacement)
+def normalize_single_image_references(prompt):
+    """Number an unambiguous bare tag; preserve explicit and quoted references."""
+    return replace_unquoted(re.compile(r"<image>"), prompt,
+                            lambda _match, _masked: "<image1>")
 
 
 def validate_language(answer, output_language, protected_literals=None):
@@ -516,9 +513,9 @@ class LocalServer:
                                   f"from {tags}, each for its matching input image; omit none. "
                                   "Do not use the unnumbered <image> tag.")
             else:
-                reference_rule = ("There is one input image. Do not put <image>, <image1>, "
-                                  "or any other image-reference tag in rewritten_prompt; "
-                                  "refer to the input image naturally.")
+                reference_rule = ("There is one input image. Refer to it naturally by default. "
+                                  "If rewritten_prompt uses an image tag, only <image1> is valid; "
+                                  "never use the unnumbered <image> placeholder.")
             system += "\n\nRuntime image-reference rule: " + reference_rule
             if output_language != "auto":
                 language = "English" if output_language == "English" else "Chinese"
@@ -587,8 +584,7 @@ class LocalServer:
                     normalized_single_image_tags = 0
                     if task == "edit" and len(images) == 1:
                         answer["rewritten_prompt"], normalized_single_image_tags = (
-                            normalize_single_image_references(answer["rewritten_prompt"],
-                                                              output_language))
+                            normalize_single_image_references(answer["rewritten_prompt"]))
                     removed_background_sentences = 0
                     if transparent_rgba:
                         answer["rewritten_prompt"], normalized_background_phrases = (
@@ -613,8 +609,7 @@ class LocalServer:
                         translation_fallback = True
                         if task == "edit" and len(images) == 1:
                             answer["rewritten_prompt"], normalized_more_tags = (
-                                normalize_single_image_references(answer["rewritten_prompt"],
-                                                                  output_language))
+                                normalize_single_image_references(answer["rewritten_prompt"]))
                             normalized_single_image_tags += normalized_more_tags
                         if transparent_rgba:
                             answer["rewritten_prompt"], normalized_more_backdrop = (
