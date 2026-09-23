@@ -94,7 +94,7 @@
 
 ## 可选：Viggle Turbo 4 步 LoRA
 
-[下载 ComfyUI 转换版 LoRA](https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8/releases/download/viggle-turbo-comfyui-r64-v0.1/Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors)。这是**出图扩散模型**使用的 LoRA，和上面的 PE GGUF 分开安装；本仓库只转换了 [Viggle 原始 LoRA](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) 的 ComfyUI 键名，没有重新训练。将文件放入 `ComfyUI/models/loras/`，在基础模型后接 `LoraLoaderModelOnly`，`strength_model=1.0`。依照原模型说明使用 **4 步、CFG 1.0、空负面提示词**；上面完整工作流的 12 步是基础模型示例，使用该 LoRA 时需调整。转换与校验信息见 [VIGGLE-LORA-NOTICE.txt](VIGGLE-LORA-NOTICE.txt)。该转换版尚未完成独立的完整出图验收。
+[下载 ComfyUI 转换版 LoRA](https://huggingface.co/t8star/Qwen-Image-2.1-viggle-turbo-4step-r64-comfy/resolve/main/Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors?download=true)。这是**出图扩散模型**使用的 LoRA，和上面的 PE GGUF 分开安装；本仓库只转换了 [Viggle 原始 LoRA](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) 的 ComfyUI 键名，没有重新训练。将文件放入 `ComfyUI/models/loras/`，在基础模型后接 `LoraLoaderModelOnly`，`strength_model=1.0`。依照原模型说明使用 **4 步、CFG 1.0、空负面提示词**；上面完整工作流的 12 步是基础模型示例，使用该 LoRA 时需调整。转换与校验信息见 [Hugging Face 模型卡](https://huggingface.co/t8star/Qwen-Image-2.1-viggle-turbo-4step-r64-comfy)。该转换版尚未完成独立的完整出图验收。
 
 ## 来源与许可
 
