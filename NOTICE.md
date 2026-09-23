@@ -5,3 +5,5 @@ This repository includes the Qwen Image 2.1 prompt-rewrite system prompt templat
 Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) 2026 Hangzhou Tongyi Laboratory Technology Co., Ltd. All Rights Reserved.
 
 The GGUF weights are **not** included in the GitHub or ComfyUI Registry package. The separate [Hugging Face mirror](https://huggingface.co/t8star/qwen-image-2.1-comfy) credits the original Qwen checkpoints, quantizers, and the Heretic derivative; its model card carries the applicable license and provenance.
+
+The GitHub Release also distributes a ComfyUI key-converted version of [Viggle's Qwen-Image-2.1 turbo LoRA](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo). Viggle trained the adapter; T8mars changed only the tensor key names. See [VIGGLE-LORA-NOTICE.txt](VIGGLE-LORA-NOTICE.txt) for attribution, hashes, and the modification notice. The LoRA remains under the Qwen Research License and is not included in the source tree or Registry package.

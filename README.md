@@ -6,6 +6,18 @@
 
 这里下载的 GGUF 是**提示词改写模型**。要根据改写结果实际生成图像，还需要在原有 ComfyUI 工作流里安装 Qwen Image 2.1 的图像生成模型、文本编码器和 VAE。
 
+## Viggle Turbo 4 步 LoRA（ComfyUI）
+
+[下载 `Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors`](https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8/releases/download/viggle-turbo-comfyui-r64-v0.1/Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors)（GitHub Release，约 324 MiB）。这是将 [Viggle 发布的 Qwen-Image-2.1 4 步 LoRA](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) 转成 ComfyUI 模型键名的版本，rank 64、alpha 64，BF16 权重数据保持原样。**Built with Qwen.** 原始蒸馏训练由 Viggle 完成，本仓库只做格式转换；这份 LoRA 与 Viggle 的完整微调 Transformer 是不同权重，不要叠加。
+
+1. 先安装支持 Qwen Image 2.1 的新版 ComfyUI，以及 [Comfy-Org 的基础扩散模型、文本编码器和 VAE](https://huggingface.co/Comfy-Org/Qwen-Image-2.1)。
+2. 将上面的 `.safetensors` 放入 `ComfyUI/models/loras/`，在基础模型后接原生 `LoraLoaderModelOnly`，`strength_model` 设为 `1.0`。
+3. 按 Viggle 的模型说明使用 **4 步、CFG 1.0、不填负面提示词**。官方 Diffusers 调度器使用 `shift_terminal=null`；这一设置不包含在 LoRA 中，ComfyUI 默认采样日程不保证与官方 Diffusers 完全一致。仓库现有完整出图工作流的 12 步参数用于基础模型，使用本 LoRA 时请改为 4 步。
+
+**推荐搭配 [本仓库的 PE Rewrite T8 提示词强化节点](https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8)**：先改写文生图或编辑提示词，再把输出送入 Qwen Image 2.1 文本编码节点。提示词强化节点使用独立的 GGUF 模型；本 LoRA 则作用于图像生成扩散模型，两者可组合使用，且分别安装。
+
+文件 SHA256：`92be516174803a279b6a590fd3861a188c89ed16ebc419daf97b982f0afe53c1`。转换后的 454 个张量对应 227 个模块；已验证张量数据区与 Viggle 原始 LoRA 一致，并匹配 ComfyUI 上游的 Qwen Image 2.1 LoRA 键映射。尚未进行完整出图测试。参见 [模型来源与转换说明](VIGGLE-LORA-NOTICE.txt)及 [Qwen Research License](LICENSE-QWEN-RESEARCH)；权重仅限非商业研究或评估，商用需另行取得授权。
+
 ## 安装
 
 1. 当前 Registry 版本仍待审核；先将[本仓库](https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8)克隆或解压到 `ComfyUI/custom_nodes/Comfyui-Qwen-Image-Prompt-Rewrite-T8/`，然后重启 ComfyUI。待 Registry 状态转为 Active 后，也可在 ComfyUI Manager 搜索 `qwen-image-prompt-rewrite-t8` 安装，或运行 `comfy node install qwen-image-prompt-rewrite-t8`。
@@ -46,7 +58,7 @@
 
 测试与未满足的验收门槛记录在本地 `roadmap.md`。模型权重、运行时和该内部规划文档被 `.gitignore` 排除。
 
-本项目内的官方系统提示词模板来自 [QwenLM/Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1/tree/main/prompt_rewrite/prompts)，遵守 [Qwen Research License Agreement](LICENSE-QWEN-RESEARCH)；见 [第三方材料说明](NOTICE.md)。模型镜像随附该许可和 NOTICE，权重仅获准用于非商业研究或评估；商业用途需另向 Qwen 权利人取得许可。此仓库未随附任何模型权重，也不代表本节点获得商业模型授权。
+本项目内的官方系统提示词模板来自 [QwenLM/Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1/tree/main/prompt_rewrite/prompts)，遵守 [Qwen Research License Agreement](LICENSE-QWEN-RESEARCH)；见 [第三方材料说明](NOTICE.md)。GGUF 模型镜像随附该许可和 NOTICE。Viggle LoRA 作为单独的 GitHub Release 附件提供，不进入源码仓库或 ComfyUI Registry 节点安装包；权重仅获准用于非商业研究或评估，商业用途需另向 Qwen 权利人取得许可。
 
 本地验收已覆盖 1–10 图改写真实推理，并在 ComfyUI 界面验证了纯改写的文生图、双图、十图、语言及透明选项、本地模型列表、显式卸载与中断。六份完整出图工作流也已在新版 ComfyUI 界面跑通：标准版和 Heretic 均生成苹果图；双图编辑把第一张的红苹果放入第二张的橙色场景，`ratio_follow=<image2>` 对应实际 512×384 输出；十图编辑输出 784×336 的十列色块，按参考图 1–10 顺序排列，最后一列为黄色；中英文透明版输出 PNG 的 alpha 最小值均为 0。中文透明版的最终提示词含指定 RGBA 前缀与 alpha 透明背景后缀。标准 T2I 和 Heretic 在同一组 12 条提示词样例中均通过严格 JSON 校验。20 轮模型切换及卸载检查没有发现残留自有进程。详细运行记录保存在忽略目录 `runtime/`，不会上传。
 
