@@ -1,4 +1,4 @@
-"""Download the four explicitly approved model artifacts and verify their SHA256."""
+"""Download the approved PE model artifacts and verify their SHA256."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
@@ -37,6 +37,20 @@ FILES = (
         "pe_t2i_heretic-Q4_K_M.gguf",
         5891335008,
         "fe176ded062942ac8858290a33c9303a6e9c09c31405020a22ad0d47fa7b9b69",
+    ),
+    (
+        "pottokao/Qwen-Image-2.1-PE-I2I-Heretic-GGUF",
+        "564f783ebea6c244c7dae8460ece65eb174479a6",
+        "pe_i2i_heretic-Q4_K_M.gguf",
+        5891334720,
+        "4fa7d846acc6b6366f2b959293fb073f304d18c2d0a73d7a193cb09cc87bf074",
+    ),
+    (
+        "pottokao/Qwen-Image-2.1-PE-I2I-Heretic-GGUF",
+        "564f783ebea6c244c7dae8460ece65eb174479a6",
+        "pe_i2i_heretic.mmproj-bf16.gguf",
+        921704608,
+        "171a59a76e498252fb0ee5c145633c6f3a2eaaad03a171e3d5828de230369807",
     ),
 )
 

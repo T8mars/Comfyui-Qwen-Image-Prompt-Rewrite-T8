@@ -232,6 +232,20 @@ class RuntimeContractTests(unittest.TestCase):
                 self.assertEqual(pick_mmproj(model.name, "Auto"), vision)
                 self.assertEqual(pick_mmproj(model.name, vision.name), vision)
 
+    def test_hyphen_quantized_heretic_edit_pairs_with_own_vision_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            model = root / "pe_i2i_heretic-Q4_K_M.gguf"
+            vision = root / "pe_i2i_heretic.mmproj-bf16.gguf"
+            other = root / "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
+            for path in (model, vision, other):
+                path.write_bytes(b"stub")
+            with patch("pe_runtime.model_roots", side_effect=lambda: iter([root])):
+                self.assertEqual(pick_mmproj(model.name, "Auto"), vision)
+                self.assertEqual(pick_mmproj(model.name, vision.name), vision)
+                with self.assertRaises(ValueError):
+                    pick_mmproj(model.name, other.name)
+
     def test_file_signature_changes_for_same_size_atomic_replacement(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "model.gguf"

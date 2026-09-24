@@ -18,13 +18,13 @@
    cd Comfyui-Qwen-Image-Prompt-Rewrite-T8
    ```
 
-2. 在节点目录中，用 **ComfyUI 所使用的 Python** 下载三个 Q4_K_M 主模型和一个 I2I 视觉组件：
+2. 在节点目录中，用 **ComfyUI 所使用的 Python** 下载四个 Q4_K_M 主模型和两个 I2I 视觉组件：
 
    ```bash
    python tools/download_models.py
    ```
 
-   下载器会校验文件大小和 SHA256，并支持断点续传。也可以从[模型镜像](https://huggingface.co/t8star/qwen-image-2.1-comfy)手动下载以下四个文件，保持文件名不变，放入 `models/llm/qwenimage-pe/`：
+   下载器会校验文件大小和 SHA256，并支持断点续传。也可以从[基础模型镜像](https://huggingface.co/t8star/qwen-image-2.1-comfy)与 [Heretic I2I 来源仓库](https://huggingface.co/pottokao/Qwen-Image-2.1-PE-I2I-Heretic-GGUF)手动下载以下六个文件，保持文件名不变，放入 `models/llm/qwenimage-pe/`：
 
    | 用途 | 文件 |
    | --- | --- |
@@ -32,6 +32,8 @@
    | 图像编辑 | `Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf` |
    | 图像编辑的视觉组件 | `Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf` |
    | 可选的 Heretic 文生图模型 | `pe_t2i_heretic-Q4_K_M.gguf` |
+   | 可选的 Heretic 图像编辑模型 | `pe_i2i_heretic-Q4_K_M.gguf` |
+   | Heretic 图像编辑的视觉组件 | `pe_i2i_heretic.mmproj-bf16.gguf` |
 
    视觉组件的来源仓库没有 Q4 版本，因此使用 BF16 文件。模型目录也可以是 `ComfyUI/models/llm/qwenimage-pe/`，或通过 `QWEN_PE_MODEL_DIR` 指定。模型权重不随 GitHub 源码或 Registry 安装包提供。
 
@@ -57,7 +59,7 @@
 在 **PE Rewrite T8** 中输入 `user_prompt`，然后选择：
 
 - `task`：`auto` 根据**实际有图**的输入选择文生图或编辑；`t2i` 只接受文字；`edit` 至少需要一张图。
-- `t2i_model` / `edit_model`：分别用于文生图与编辑。编辑还需要匹配的 `vision_model`，通常保持 `Auto`。
+- `t2i_model` / `edit_model`：分别用于文生图与编辑。可在 `edit_model` 中选择 `pe_i2i_heretic-Q4_K_M.gguf`；其配套视觉组件会在 `vision_model=Auto` 时自动匹配。
 - `aspect_ratio`：`auto` 或 `1:1`、`1:2`、`2:3`、`3:4`、`4:5`、`16:9`、`9:16`、`21:9`、`9:21`、`5:4`、`4:3`、`2:1`。指定比例会覆盖模型建议，并传给 PE Canvas。
 - `output_language`：`auto`、`中文`、`English`。指定语言时，节点会检查改写结果；必要时使用当前本地模型翻译，图内明确要求的引号文字保持原样。
 - `transparent_rgba`：在最终提示词中加入 RGBA、alpha 通道和透明背景要求。**它控制提示词，不保证下游生成的图片一定带 alpha 通道。**

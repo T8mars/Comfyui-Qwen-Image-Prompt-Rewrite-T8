@@ -117,7 +117,7 @@ def file_signature(path):
 
 def pick_mmproj(model_name, chosen):
     model_path = resolve_model(model_name)
-    base = re.sub(r"\.(?:Q\d[^.]*|IQ\d[^.]*|BF16|F16|F32)$", "",
+    base = re.sub(r"[.-](?:Q\d[^.]*|IQ\d[^.]*|BF16|F16|F32)$", "",
                   Path(model_name).stem, flags=re.IGNORECASE)
     if chosen != "Auto":
         path = resolve_model(chosen, True)

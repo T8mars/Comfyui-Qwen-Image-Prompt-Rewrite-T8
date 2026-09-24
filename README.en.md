@@ -18,13 +18,13 @@ A local prompt rewriting node for ComfyUI. Give it text alone, or text plus 1–
    cd Comfyui-Qwen-Image-Prompt-Rewrite-T8
    ```
 
-2. From the node directory, use the **same Python environment as ComfyUI** to download three Q4_K_M main models and the I2I vision component:
+2. From the node directory, use the **same Python environment as ComfyUI** to download four Q4_K_M main models and two I2I vision components:
 
    ```bash
    python tools/download_models.py
    ```
 
-   The downloader verifies file sizes and SHA256 hashes and resumes interrupted downloads. You can also download the four files from the [model mirror](https://huggingface.co/t8star/qwen-image-2.1-comfy) and place them, with their original names, in `models/llm/qwenimage-pe/`:
+   The downloader verifies file sizes and SHA256 hashes and resumes interrupted downloads. You can also get the six files from the [base model mirror](https://huggingface.co/t8star/qwen-image-2.1-comfy) and the [Heretic I2I source repository](https://huggingface.co/pottokao/Qwen-Image-2.1-PE-I2I-Heretic-GGUF), then place them, with their original names, in `models/llm/qwenimage-pe/`:
 
    | Purpose | File |
    | --- | --- |
@@ -32,6 +32,8 @@ A local prompt rewriting node for ComfyUI. Give it text alone, or text plus 1–
    | Image editing | `Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf` |
    | Vision component for editing | `Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf` |
    | Optional Heretic text-to-image model | `pe_t2i_heretic-Q4_K_M.gguf` |
+   | Optional Heretic image-editing model | `pe_i2i_heretic-Q4_K_M.gguf` |
+   | Vision component for Heretic editing | `pe_i2i_heretic.mmproj-bf16.gguf` |
 
    The source repository does not provide a Q4 vision component, so this project uses the BF16 file. You may also use `ComfyUI/models/llm/qwenimage-pe/` or set `QWEN_PE_MODEL_DIR` to a custom model directory. Model weights are not bundled with the GitHub source or Registry package.
 
@@ -57,7 +59,7 @@ After restarting ComfyUI, find the nodes under **Qwen Image 2.1 / Prompt Rewrite
 Enter your instruction in `user_prompt` and choose the following options in **PE Rewrite T8**:
 
 - `task`: `auto` selects text-to-image or editing from the images **actually present**. `t2i` accepts text only; `edit` requires at least one image.
-- `t2i_model` / `edit_model`: Separate model choices for the two tasks. Editing also needs a matching `vision_model`; `Auto` normally finds it.
+- `t2i_model` / `edit_model`: Separate model choices for the two tasks. Select `pe_i2i_heretic-Q4_K_M.gguf` in `edit_model` to use Heretic editing; `vision_model=Auto` selects its matching vision component.
 - `aspect_ratio`: `auto`, `1:1`, `1:2`, `2:3`, `3:4`, `4:5`, `16:9`, `9:16`, `21:9`, `9:21`, `5:4`, `4:3`, or `2:1`. An explicit choice overrides the model's suggestion and feeds PE Canvas.
 - `output_language`: `auto`, `中文`, or `English`. With an explicit language, the node checks the rewrite and, if needed, translates it with the local model. Exact text requested inside quotation marks is preserved.
 - `transparent_rgba`: Adds RGBA, alpha-channel, and transparent-background instructions to the final prompt. **This constrains the prompt; it does not guarantee that the downstream image has an alpha channel.**
