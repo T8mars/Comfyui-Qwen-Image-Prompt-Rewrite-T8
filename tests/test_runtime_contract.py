@@ -5,14 +5,16 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import torch
 from PIL import Image
 
-from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ,
+from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ, LOCAL_OPENER,
                         LocalServer, file_signature, local_models,
                         normalize_single_image_references, parse_answer, pick_mmproj,
                         prepare_images, quoted_literals,
@@ -429,6 +431,69 @@ class RuntimeContractTests(unittest.TestCase):
             translated, _ = server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
         self.assertEqual(translated, 'The sign says "HELLO".')
 
+    def test_chinese_translation_repairs_residual_english_before_format_retry(self):
+        server = LocalServer()
+        base = {"rewritten_prompt": "A muted red desk lamp with a fitted lid.",
+                "wh_ratio": "1:1"}
+        responses = [
+            {"choices": [{"message": {"content": json.dumps(base)},
+                          "finish_reason": "stop"}], "usage": {}},
+            {"choices": [{"message": {"content": "一盏 muted red 台灯，带 fitted lid。"},
+                          "finish_reason": "stop"}], "usage": {}},
+            {"choices": [{"message": {"content": "一盏柔和的红色台灯，带贴合的盖子。"},
+                          "finish_reason": "stop"}], "usage": {"completion_tokens": 17}},
+        ]
+        with patch.object(server, "_post_completion", side_effect=responses) as completion:
+            answer, info = server.complete("t2i", "A muted red desk lamp with a fitted lid.",
+                                           [], 42, 1, output_language="中文")
+        self.assertEqual(completion.call_count, 3)
+        self.assertEqual(answer["rewritten_prompt"], "一盏柔和的红色台灯，带贴合的盖子。")
+        self.assertEqual(info["format_retries"], 0)
+        self.assertTrue(info["translation_fallback"])
+        self.assertEqual(info["translation_usage"], {"completion_tokens": 17})
+        second_translation = completion.call_args_list[2].args[0]
+        self.assertEqual(second_translation["temperature"], 0.3)
+        self.assertIn("muted", second_translation["messages"][1]["content"])
+        self.assertIn(base["rewritten_prompt"], second_translation["messages"][1]["content"])
+
+    def test_loopback_health_and_completion_bypass_environment_proxy(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"healthy")
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                body = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            proxy = {"HTTP_PROXY": "http://127.0.0.1:1",
+                     "HTTPS_PROXY": "http://127.0.0.1:1",
+                     "http_proxy": "http://127.0.0.1:1",
+                     "https_proxy": "http://127.0.0.1:1",
+                     "NO_PROXY": "", "no_proxy": ""}
+            with patch.dict(os.environ, proxy):
+                with LOCAL_OPENER.open(f"http://127.0.0.1:{httpd.server_port}/health", timeout=2) as response:
+                    self.assertEqual(response.status, 200)
+                server = LocalServer()
+                server.port = httpd.server_port
+                self.assertEqual(server._post_completion({"model": "test"}, 2), {"ok": True})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=2)
+
     def test_kept_server_reloads_replaced_model_file(self):
         class FakeProcess:
             returncode = None
@@ -455,7 +520,7 @@ class RuntimeContractTests(unittest.TestCase):
             with (patch.object(pe_runtime, "ROOT", Path(temp)),
                   patch.object(LocalServer, "binary", return_value=Path(temp) / "server"),
                   patch.object(pe_runtime.subprocess, "Popen", side_effect=[first, second]) as launch,
-                  patch.object(pe_runtime, "urlopen", return_value=health)):
+                  patch.object(pe_runtime.LOCAL_OPENER, "open", return_value=health)):
                 server = LocalServer()
                 server.start(model, None, 1024, 0)
                 server.start(model, None, 1024, 0)

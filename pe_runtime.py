@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 import numpy as np
 from PIL import Image
@@ -20,6 +20,9 @@ from torch.nn.functional import interpolate
 
 
 ROOT = Path(__file__).resolve().parent
+# Every HTTP request in this module targets our own loopback llama-server.
+# Ignore process-wide proxy settings, which may otherwise intercept 127.0.0.1.
+LOCAL_OPENER = build_opener(ProxyHandler({}))
 DEFAULT_T2I = "Qwen-Image-2.1-PE-T2I.Q4_K_M.gguf"
 DEFAULT_EDIT = "Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf"
 DEFAULT_MMPROJ = "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
@@ -467,7 +470,7 @@ class LocalServer:
                        context, gpu_layers)
             if self.process is not None and self.process.poll() is None and self.profile == profile:
                 try:
-                    with urlopen(f"http://127.0.0.1:{self.port}/health", timeout=2) as response:
+                    with LOCAL_OPENER.open(f"http://127.0.0.1:{self.port}/health", timeout=2) as response:
                         if response.status == 200:
                             return
                 except (URLError, TimeoutError, HTTPError):
@@ -501,7 +504,7 @@ class LocalServer:
                     if self.process.poll() is not None:
                         raise RuntimeError(f"llama-server exited with {self.process.returncode}; see {log_path}")
                     try:
-                        with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
+                        with LOCAL_OPENER.open(f"http://127.0.0.1:{port}/health", timeout=3) as response:
                             if response.status == 200:
                                 return
                     except (URLError, TimeoutError, HTTPError):
@@ -625,25 +628,43 @@ class LocalServer:
                     except ValueError:
                         if output_language == "auto":
                             raise
-                        answer["rewritten_prompt"], translation_usage = self._translate_prose(
-                            answer["rewritten_prompt"], output_language, seed, timeout)
                         translation_fallback = True
-                        if task == "edit" and len(images) == 1:
-                            answer["rewritten_prompt"], normalized_more_tags = (
-                                normalize_single_image_references(answer["rewritten_prompt"]))
-                            normalized_single_image_tags += normalized_more_tags
-                        if transparent_rgba:
-                            answer["rewritten_prompt"], normalized_more_backdrop = (
-                                normalize_opaque_background_phrases(answer["rewritten_prompt"], exact_literals))
-                            normalized_background_phrases += normalized_more_backdrop
-                            answer["rewritten_prompt"], removed_more = (
-                                remove_opaque_background_sentences(answer["rewritten_prompt"], exact_literals))
-                            removed_background_sentences += removed_more
-                            answer["rewritten_prompt"], normalized_more = (
-                                normalize_transparent_margins(answer["rewritten_prompt"], exact_literals))
-                            normalized_margin_phrases += normalized_more
-                        validate_references(answer, task, len(images), exact_literals)
-                        validate_language(answer, output_language, exact_literals)
+                        source_prose = answer["rewritten_prompt"]
+                        correction = None
+                        for translation_attempt in range(3):
+                            try:
+                                translated, translation_usage = self._translate_prose(
+                                    source_prose, output_language, seed, timeout,
+                                    correction=correction,
+                                    temperature=0.0 if translation_attempt == 0 else 0.3)
+                                normalized_more_tags = 0
+                                normalized_more_backdrop = 0
+                                removed_more = 0
+                                normalized_more = 0
+                                if task == "edit" and len(images) == 1:
+                                    translated, normalized_more_tags = normalize_single_image_references(translated)
+                                if transparent_rgba:
+                                    translated, normalized_more_backdrop = (
+                                        normalize_opaque_background_phrases(translated, exact_literals))
+                                    translated, removed_more = (
+                                        remove_opaque_background_sentences(translated, exact_literals))
+                                    translated, normalized_more = (
+                                        normalize_transparent_margins(translated, exact_literals))
+                                candidate = {**answer, "rewritten_prompt": translated}
+                                validate_references(candidate, task, len(images), exact_literals)
+                                validate_language(candidate, output_language, exact_literals)
+                                validate_mode(candidate, aspect_ratio, transparent_rgba, exact_literals)
+                            except ValueError as exc:
+                                if translation_attempt == 2:
+                                    raise
+                                correction = str(exc)
+                            else:
+                                answer = candidate
+                                normalized_single_image_tags += normalized_more_tags
+                                normalized_background_phrases += normalized_more_backdrop
+                                removed_background_sentences += removed_more
+                                normalized_margin_phrases += normalized_more
+                                break
                     validate_mode(answer, aspect_ratio, transparent_rgba, exact_literals)
                     return answer, {"finish_reason": choice.get("finish_reason"),
                                     "usage": result.get("usage", {}),
@@ -668,7 +689,8 @@ class LocalServer:
                     payload["chat_template_kwargs"] = {"enable_thinking": False}
             raise AssertionError("unreachable")
 
-    def _translate_prose(self, prose, output_language, seed, timeout):
+    def _translate_prose(self, prose, output_language, seed, timeout,
+                         correction=None, temperature=0.0):
         target = "Simplified Chinese" if output_language == "中文" else "English"
         if output_language == "中文":
             request_text = (
@@ -681,12 +703,19 @@ class LocalServer:
                 "Do not add or remove visual facts. Keep every <imageN> tag and every exact "
                 "quoted string unchanged. Return only plain translated prose, with no heading, "
                 "JSON, or explanation.\n\n" + prose)
+        if correction:
+            request_text = (
+                "上次译文未通过校验，请修正后重新翻译原文。错误：" + correction[:500] + "\n\n"
+                if output_language == "中文" else
+                "The previous translation failed validation. Fix this error and retranslate "
+                "the original text: " + correction[:500] + "\n\n"
+            ) + request_text
         payload = {
             "model": "qwen-pe",
             "messages": [{"role": "system", "content": "你是严格忠实的图像提示词翻译编辑。只执行翻译。" if output_language == "中文" else
                          "You are a faithful translation editor for image prompts."},
                          {"role": "user", "content": request_text}],
-            "temperature": 0.0, "top_p": 0.9, "max_tokens": 8192,
+            "temperature": temperature, "top_p": 0.9, "max_tokens": 8192,
             "seed": seed, "chat_template_kwargs": {"enable_thinking": False}, "stream": False,
         }
         result = self._post_completion(payload, timeout)
@@ -713,7 +742,7 @@ class LocalServer:
 
         def perform():
             try:
-                with urlopen(request, timeout=timeout) as response:
+                with LOCAL_OPENER.open(request, timeout=timeout) as response:
                     outcome["result"] = json.load(response)
             except HTTPError as exc:
                 detail = exc.read(2000).decode("utf-8", "replace")

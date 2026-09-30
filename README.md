@@ -89,10 +89,12 @@
 | 编辑模式提示缺少 mmproj | 确认 I2I 主模型和视觉文件同目录，或在 `vision_model` 中选择匹配文件。 |
 | `model response reached the generation or context limit` | 节点会关闭思考重试一次；仍失败时查看错误中的 token 用量，减少输入图片或缩短原始要求。多图模式会占用更多显存。 |
 | `model failed format validation` | 模型两次都未返回合规的 JSON、比例、语言或图片编号；查看报错详情。成功运行时可用 `diagnostics` 核对任务及图片端口映射。 |
+| `llama-server did not become healthy`，但日志显示已监听 | 更新到 1.0.11 或更高版本；本地健康检查和推理请求会绕过 `HTTP_PROXY`/`HTTPS_PROXY`。旧版可临时设置 `NO_PROXY=127.0.0.1,localhost`。 |
+| 中文输出报 `Chinese descriptive prose contains English words` | 更新到 1.0.11 或更高版本；翻译回退现在会根据残留英文词反馈再试。若仍失败，查看错误中的词及 `diagnostics`。 |
 | 找不到 `TextEncodeQwenImage21` | 更新到支持 Qwen Image 2.1 的 ComfyUI；纯改写示例不需要该节点。 |
 | 透明图最终仍是不透明 PNG | 检查下游图像模型、VAE 和保存流程；PE 节点只生成透明图提示词。 |
 
-本地 `llama-server` 只监听 `127.0.0.1`。输入图会缩小为最多约 100 万像素、最长边 4096 像素的视觉副本；PE Canvas 仍使用原图尺寸。模型返回内容经过 JSON、图片引用、语言及模式校验，失败时会重试一次并报告原因。
+本地 `llama-server` 只监听 `127.0.0.1`，节点请求会绕过环境代理。输入图会缩小为最多约 100 万像素、最长边 4096 像素的视觉副本；PE Canvas 仍使用原图尺寸。模型返回内容经过 JSON、图片引用、语言及模式校验，失败时会重试一次并报告原因；翻译回退还会单独校验并最多重试两次。
 
 ## 可选：Viggle Turbo 4 步 LoRA
 

@@ -89,10 +89,12 @@ The directory also has Heretic text-to-image, Chinese and English transparency, 
 | Editing reports a missing mmproj | Put the matching I2I main model and vision file together, or choose the matching `vision_model`. |
 | `model response reached the generation or context limit` | The node retries once without thinking. If it still fails, inspect the token counts in the error, use fewer images, or shorten the instruction. Multi-image jobs use more VRAM. |
 | `model failed format validation` | Both attempts failed a JSON, ratio, language, or image-reference check. Read the error details. After a successful run, `diagnostics` can confirm the task and input-port mapping. |
+| `llama-server did not become healthy` although the log shows it listening | Update to version 1.0.11 or later; local health checks and inference bypass `HTTP_PROXY`/`HTTPS_PROXY`. On older versions, `NO_PROXY=127.0.0.1,localhost` is a temporary workaround. |
+| Chinese output reports `Chinese descriptive prose contains English words` | Update to version 1.0.11 or later; translation fallback now retries with feedback about the remaining English words. If it still fails, inspect the reported words and `diagnostics`. |
 | `TextEncodeQwenImage21` is missing | Update to a ComfyUI release supporting Qwen Image 2.1. Prompt-only workflows do not need this node. |
 | The output PNG is still opaque | Check the downstream image model, VAE, and saving workflow. This node only writes the transparency prompt. |
 
-The local `llama-server` listens on `127.0.0.1` only. A visual copy of each input is scaled to at most about one million pixels and a 4096-pixel longest side; PE Canvas retains the original dimensions. The response is checked for JSON structure, image references, language, and mode constraints, with one retry on validation failure.
+The local `llama-server` listens on `127.0.0.1` only, and the node's requests bypass environment proxies. A visual copy of each input is scaled to at most about one million pixels and a 4096-pixel longest side; PE Canvas retains the original dimensions. The response is checked for JSON structure, image references, language, and mode constraints, with one retry on validation failure; translation fallback is checked separately and can retry twice more.
 
 ## Optional: Viggle Turbo 4-step LoRA
 
