@@ -6,6 +6,8 @@ A local prompt rewriting node for ComfyUI. Give it text alone, or text plus 1–
 
 > **What the models do:** The GGUF files in this project **rewrite prompts**. To generate images, your ComfyUI workflow also needs a Qwen Image 2.1 diffusion model, text encoder, and VAE. Those are separate downloads.
 
+> **Before the first run, install two separate components:** at least one PE GGUF model set and the llama.cpp `llama-server.exe` runtime. ComfyUI Manager / Registry installs the node code **without the GGUF files or EXE**. For a missing EXE, follow the [Windows instructions below](#install-llama-server-windows).
+
 [GGUF model mirror](https://huggingface.co/t8star/qwen-image-2.1-comfy) · [ComfyUI Registry page](https://registry.comfy.org/zh/publishers/t8star/nodes/qwen-image-prompt-rewrite-t8) · [Example workflows](workflows/) · [Report an issue](https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8/issues/new)
 
 ## Quick setup
@@ -37,15 +39,34 @@ A local prompt rewriting node for ComfyUI. Give it text alone, or text plus 1–
 
    The source repository does not provide a Q4 vision component, so this project uses the BF16 file. You may also use `ComfyUI/models/llm/qwenimage-pe/` or set `QWEN_PE_MODEL_DIR` to a custom model directory. Model weights are not bundled with the GitHub source or Registry package.
 
-3. Install a compatible `llama-server`. On Windows, run this from the node directory:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File tools/download_runtime.ps1
-   ```
-
-   This script downloads a llama.cpp Windows CUDA 12.4 runtime. On other platforms, install a compatible `llama-server` yourself and set `QWEN_PE_LLAMA_SERVER` to its executable path. ComfyUI's Python environment must contain `torch`, `numpy`, and `Pillow`.
+3. Install `llama-server.exe` using the next section. ComfyUI's Python environment must contain `torch`, `numpy`, and `Pillow`.
 
 After restarting ComfyUI, find the nodes under **Qwen Image 2.1 / Prompt Rewrite**. Registry availability may change; use the repository installation steps above if the node is not offered in Manager.
+
+## Install llama-server (Windows)
+
+This node launches the official llama.cpp **`llama-server.exe`** locally to rewrite prompts. It is separate from the GGUF models. The `llama-cpp-python` wheel does **not** supply this executable, so `pip install llama-cpp-python` does not fix a missing-EXE error.
+
+**Windows x64 with NVIDIA:** download **both** prebuilt CUDA 12.4 ZIPs from the [official llama.cpp b11068 release](https://github.com/ggml-org/llama.cpp/releases/tag/b11068):
+
+1. [llama-b11068-bin-win-cuda-12.4-x64.zip — main program, including `llama-server.exe`](https://github.com/ggml-org/llama.cpp/releases/download/b11068/llama-b11068-bin-win-cuda-12.4-x64.zip)
+2. [cudart-llama-bin-win-cuda-12.4-x64.zip — matching CUDA DLLs](https://github.com/ggml-org/llama.cpp/releases/download/b11068/cudart-llama-bin-win-cuda-12.4-x64.zip)
+
+Find the **actual node directory** containing `pe_runtime.py` and `tools/` (Manager may choose a different folder name). Create `runtime/llama-b11068/` inside it and extract the **contents of both ZIPs into that same directory**. The result should contain:
+
+```text
+<node directory>/runtime/llama-b11068/llama-server.exe
+<node directory>/runtime/llama-b11068/cudart64_12.dll
+<node directory>/runtime/llama-b11068/cublas64_12.dll
+```
+
+Do not leave the executable inside a ZIP, put it in the GGUF model directory, or create an extra nested folder. Alternatively, open PowerShell in the node directory and download/extract the same official packages with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\download_runtime.ps1
+```
+
+Check the installation from that directory with `Test-Path .\runtime\llama-b11068\llama-server.exe`; it should return `True`. Restart ComfyUI. If you keep the runtime elsewhere, set `QWEN_PE_LLAMA_SERVER` to the **full path** of its executable before restarting. On Linux/macOS, select the appropriate binary from the [official release](https://github.com/ggml-org/llama.cpp/releases/tag/b11068) and set this environment variable.
 
 ## Using the nodes
 
@@ -86,6 +107,7 @@ The directory also has Heretic text-to-image, Chinese and English transparency, 
 | Symptom | What to check |
 | --- | --- |
 | Empty model list or GGUF not found | Check the filenames and model directory. **PE Local Models T8** shows what the node discovered. |
+| `llama-server.exe not found` | This means the separate runtime is missing, not the model. Download both official ZIPs and extract them under the node's `runtime/llama-b11068/` as shown in the [Windows instructions](#install-llama-server-windows). |
 | Editing reports a missing mmproj | Put the matching I2I main model and vision file together, or choose the matching `vision_model`. |
 | `model response reached the generation or context limit` | The node retries once without thinking. If it still fails, inspect the token counts in the error, use fewer images, or shorten the instruction. Multi-image jobs use more VRAM. |
 | `model failed format validation` | Both attempts failed a JSON, ratio, language, or image-reference check. Read the error details. After a successful run, `diagnostics` can confirm the task and input-port mapping. |

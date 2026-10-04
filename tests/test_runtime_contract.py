@@ -23,6 +23,14 @@ from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ, LOCAL_OPENER,
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_missing_runtime_points_to_install_instructions(self):
+        import pe_runtime
+        with tempfile.TemporaryDirectory() as temp:
+            with (patch.object(pe_runtime, "ROOT", Path(temp)),
+                  patch.dict(os.environ, {"QWEN_PE_LLAMA_SERVER": ""})):
+                with self.assertRaisesRegex(FileNotFoundError, "README.md#install-llama-server-windows"):
+                    LocalServer.binary()
+
     def test_parse_t2i_json_after_thinking_text(self):
         raw = '<think>the example {"wrong": 1} is invalid</think>\n{"rewritten_prompt":"a blue dog", "wh_ratio":"3:2"}'
         self.assertEqual(parse_answer(raw, "t2i", 0)["wh_ratio"], "3:2")

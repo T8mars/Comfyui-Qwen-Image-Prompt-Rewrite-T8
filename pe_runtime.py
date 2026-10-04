@@ -439,10 +439,22 @@ class LocalServer:
             path = Path(configured)
             if path.is_file():
                 return path
-            raise FileNotFoundError(path)
+            raise FileNotFoundError(
+                f"QWEN_PE_LLAMA_SERVER points to a missing executable: {path}. "
+                "See https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8/"
+                "blob/main/README.md#install-llama-server-windows")
         matches = list((ROOT / "runtime").rglob("llama-server.exe"))
+        if not matches:
+            raise FileNotFoundError(
+                "llama-server.exe is missing. Install the two official llama.cpp Windows ZIPs "
+                "into this node's runtime/llama-b11068/ directory, or set "
+                "QWEN_PE_LLAMA_SERVER to its full path. Instructions: "
+                "https://github.com/T8mars/Comfyui-Qwen-Image-Prompt-Rewrite-T8/"
+                "blob/main/README.md#install-llama-server-windows")
         if len(matches) != 1:
-            raise FileNotFoundError("llama-server.exe not found; set QWEN_PE_LLAMA_SERVER")
+            raise RuntimeError(
+                "Multiple llama-server.exe files found under runtime/. Set "
+                "QWEN_PE_LLAMA_SERVER to the one you want to use.")
         return matches[0]
 
     def stop(self):
