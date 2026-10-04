@@ -126,6 +126,17 @@ class RuntimeContractTests(unittest.TestCase):
         validate_language({"rewritten_prompt": "Don't change the title '你好'."}, "English")
         with self.assertRaises(ValueError):
             validate_language({"rewritten_prompt": "一张 watercolor 海报。"}, "中文")
+        # A model may read text from a reference image that was never quoted
+        # in the user's instruction. The visible lettering is still literal.
+        validate_language({"rewritten_prompt": "保留背景广告牌上的标题“SUMMER SALE”，其余场景用中文描述。"},
+                          "中文", set())
+        validate_language({"rewritten_prompt": "保留'SUMMER SALE'字样，调整环境光。"},
+                          "中文", set())
+        with self.assertRaisesRegex(ValueError, "English words"):
+            validate_language({"rewritten_prompt": "画面采用‘watercolor’风格。"}, "中文", set())
+        with self.assertRaisesRegex(ValueError, "English words"):
+            validate_language({"rewritten_prompt":
+                               "保留广告牌文字“SALE”，旁边采用“watercolor”风格。"}, "中文", set())
         with self.assertRaisesRegex(ValueError, "non-target writing scripts"):
             validate_language({"rewritten_prompt": "赤い猫の写真。"}, "中文", set())
         with self.assertRaisesRegex(ValueError, "non-target writing scripts"):
@@ -463,6 +474,25 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(second_translation["temperature"], 0.3)
         self.assertIn("muted", second_translation["messages"][1]["content"])
         self.assertIn(base["rewritten_prompt"], second_translation["messages"][1]["content"])
+
+    def test_chinese_edit_preserves_english_sign_read_from_image(self):
+        server = LocalServer()
+        original = {"rewritten_prompt": "Brighten <image1> while preserving the billboard title "
+                    "'SUMMER SALE' exactly.", "wh_ratio": "", "ratio_follow": "<image1>"}
+        responses = [
+            {"choices": [{"message": {"content": json.dumps(original)},
+                          "finish_reason": "stop"}], "usage": {}},
+            {"choices": [{"message": {"content":
+                          "调亮<image1>的画面，同时原样保留广告牌标题'SUMMER SALE'。"},
+                          "finish_reason": "stop"}], "usage": {}},
+        ]
+        with patch.object(server, "_post_completion", side_effect=responses) as completion:
+            answer, info = server.complete("edit", "请调亮画面并保留招牌内容。",
+                                           ["image-data"], 42, 1, output_language="中文")
+        self.assertEqual(completion.call_count, 2)
+        self.assertIn("'SUMMER SALE'", answer["rewritten_prompt"])
+        self.assertEqual(info["format_retries"], 0)
+        self.assertTrue(info["translation_fallback"])
 
     def test_loopback_health_and_completion_bypass_environment_proxy(self):
         class Handler(BaseHTTPRequestHandler):

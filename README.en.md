@@ -82,7 +82,7 @@ Enter your instruction in `user_prompt` and choose the following options in **PE
 - `task`: `auto` selects text-to-image or editing from the images **actually present**. `t2i` accepts text only; `edit` requires at least one image.
 - `t2i_model` / `edit_model`: Separate model choices for the two tasks. Select `pe_i2i_heretic-Q4_K_M.gguf` in `edit_model` to use Heretic editing; `vision_model=Auto` selects its matching vision component.
 - `aspect_ratio`: `auto`, `1:1`, `1:2`, `2:3`, `3:4`, `4:5`, `16:9`, `9:16`, `21:9`, `9:21`, `5:4`, `4:3`, or `2:1`. An explicit choice overrides the model's suggestion and feeds PE Canvas.
-- `output_language`: `auto`, `中文`, or `English`. With an explicit language, the node checks the rewrite and, if needed, translates it with the local model. Exact text requested inside quotation marks is preserved.
+- `output_language`: `auto`, `中文`, or `English`. With an explicit language, the node checks the rewrite and, if needed, translates it with the local model. The language choice applies to **descriptive prose**; quoted text requested by the user and visible English titles, signs, and labels in reference images remain verbatim in quotation marks.
 - `transparent_rgba`: Adds RGBA, alpha-channel, and transparent-background instructions to the final prompt. **This constrains the prompt; it does not guarantee that the downstream image has an alpha channel.**
 - `model_lifetime`: `after_run` unloads after success or failure. `keep_loaded` speeds up repeated calls; use **PE Unload T8** when finished.
 
@@ -113,6 +113,7 @@ The directory also has Heretic text-to-image, Chinese and English transparency, 
 | `model failed format validation` | Both attempts failed a JSON, ratio, language, or image-reference check. Read the error details. After a successful run, `diagnostics` can confirm the task and input-port mapping. |
 | `llama-server did not become healthy` although the log shows it listening | Update to version 1.0.11 or later; local health checks and inference bypass `HTTP_PROXY`/`HTTPS_PROXY`. On older versions, `NO_PROXY=127.0.0.1,localhost` is a temporary workaround. |
 | Chinese output reports `Chinese descriptive prose contains English words` | Update to version 1.0.11 or later; translation fallback now retries with feedback about the remaining English words. If it still fails, inspect the reported words and `diagnostics`. |
+| Chinese output fails language validation on an English title or sign in an input image | Update to version 1.0.13 or later; visible image text can remain verbatim while the surrounding description stays Chinese. |
 | `TextEncodeQwenImage21` is missing | Update to a ComfyUI release supporting Qwen Image 2.1. Prompt-only workflows do not need this node. |
 | The output PNG is still opaque | Check the downstream image model, VAE, and saving workflow. This node only writes the transparency prompt. |
 

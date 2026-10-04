@@ -35,10 +35,28 @@ _QUOTED_LITERAL = re.compile(
     r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|«[^»\n]*»|'
     r"(?<![A-Za-z0-9])'(?:[^'\n]|(?<=[A-Za-z0-9])'(?=[A-Za-z0-9]))*'(?![A-Za-z0-9])"
 )
+_VISIBLE_TEXT_BEFORE = re.compile(
+    r"(?:标题|文字|字样|字幕|标语|写着|写有|写成|印着|印有|显示|标注|"
+    r"\b(?:title|text|caption|slogan|reads?|says?)\b)"
+    r"[^，,。！？.!?；;\n\"“”'‘’「」『』«»]{0,24}$|"
+    r"(?:广告牌|招牌|店招|路牌|标牌|告示牌|牌匾|横幅|标签|"
+    r"\b(?:billboard|sign|label|banner)\b)"
+    r"[^，,。！？.!?；;\n\"“”'‘’「」『』«»]{0,12}$", re.I)
+_VISIBLE_TEXT_AFTER = re.compile(
+    r"\s*(?:字样|文字|标题|标语|字幕|招牌|广告牌|路牌|标牌|标签|"
+    r"\b(?:text|title|caption|slogan|sign|label)\b)", re.I)
+
+
+def _visible_text_quote(match):
+    """Recognize quoted lettering transcribed from an input image."""
+    before = match.string[max(0, match.start() - 80):match.start()]
+    after = match.string[match.end():match.end() + 18]
+    return bool(_VISIBLE_TEXT_BEFORE.search(before) or _VISIBLE_TEXT_AFTER.match(after))
 
 
 def _protected_quote(match, protected_literals):
-    return protected_literals is None or match.group()[1:-1] in protected_literals
+    return (protected_literals is None or match.group()[1:-1] in protected_literals
+            or _visible_text_quote(match))
 
 
 def strip_quoted_literals(text, protected_literals=None):
@@ -553,6 +571,11 @@ class LocalServer:
                                   "If rewritten_prompt uses an image tag, only <image1> is valid; "
                                   "never use the unnumbered <image> placeholder.")
             system += "\n\nRuntime image-reference rule: " + reference_rule
+            if images:
+                system += ("\n\nVisible text in reference images: Keep legible titles, signs, "
+                           "advertisements, and labels verbatim inside quotation marks. "
+                           "Write the surrounding description in the selected output language; "
+                           "do not translate the visible lettering.")
             if output_language != "auto":
                 language = "English" if output_language == "English" else "Chinese"
                 system += (f"\n\nUser-selected language override: Write all descriptive prose of "
