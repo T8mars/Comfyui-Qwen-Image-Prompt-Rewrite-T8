@@ -10,6 +10,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import URLError
 
 import torch
 from PIL import Image
@@ -23,6 +24,62 @@ from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ, LOCAL_OPENER,
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_slow_startup_can_finish_after_old_180_second_limit(self):
+        import pe_runtime
+        with tempfile.TemporaryDirectory() as temp:
+            model = Path(temp) / "model.gguf"
+            model.write_bytes(b"stub")
+            process = MagicMock()
+            process.poll.return_value = None
+            health = MagicMock()
+            health.status = 200
+            health.__enter__.return_value = health
+            elapsed = [0]
+            def loading_then_healthy(*_args, **_kwargs):
+                if elapsed[0] < 240:
+                    elapsed[0] += 120
+                    raise URLError("model loading")
+                return health
+            with (patch.object(pe_runtime, "ROOT", Path(temp)),
+                  patch.object(LocalServer, "binary", return_value=Path(temp) / "server"),
+                  patch.object(pe_runtime.subprocess, "Popen", return_value=process),
+                  patch.object(pe_runtime.LOCAL_OPENER, "open", side_effect=loading_then_healthy),
+                  patch.object(pe_runtime.time, "monotonic", side_effect=lambda: elapsed[0]),
+                  patch.object(pe_runtime.time, "sleep"), patch("builtins.print"),
+                  patch.dict(sys.modules, {"comfy": None, "comfy.model_management": None})):
+                server = LocalServer()
+                server.start(model, None, 1024, 0)
+                self.assertEqual(elapsed[0], 240)
+                self.assertIs(server.process, process)
+                self.assertFalse(process.terminate.called)
+                server.stop()
+
+    def test_custom_startup_timeout_reports_log_and_cleans_up(self):
+        import pe_runtime
+        with tempfile.TemporaryDirectory() as temp:
+            model = Path(temp) / "model.gguf"
+            model.write_bytes(b"stub")
+            process = MagicMock()
+            process.poll.return_value = None
+            elapsed = [0]
+            def unavailable(*_args, **_kwargs):
+                elapsed[0] = 60
+                raise URLError("model loading")
+            with (patch.object(pe_runtime, "ROOT", Path(temp)),
+                  patch.object(LocalServer, "binary", return_value=Path(temp) / "server"),
+                  patch.object(pe_runtime.subprocess, "Popen", return_value=process),
+                  patch.object(pe_runtime.LOCAL_OPENER, "open", side_effect=unavailable),
+                  patch.object(pe_runtime.time, "monotonic", side_effect=lambda: elapsed[0]),
+                  patch.object(pe_runtime.time, "sleep"), patch("builtins.print"),
+                  patch.dict(sys.modules, {"comfy": None, "comfy.model_management": None})):
+                server = LocalServer()
+                with self.assertRaisesRegex(TimeoutError, "within 60 seconds.*server.log.*startup_timeout"):
+                    server.start(model, None, 1024, 0, startup_timeout=60)
+                self.assertTrue(process.terminate.called)
+                self.assertIsNone(server.process)
+                self.assertIsNone(server.port)
+                self.assertIsNone(server.log)
+
     def test_missing_runtime_points_to_install_instructions(self):
         import pe_runtime
         with tempfile.TemporaryDirectory() as temp:

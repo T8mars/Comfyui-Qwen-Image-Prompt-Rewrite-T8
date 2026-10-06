@@ -26,6 +26,7 @@ LOCAL_OPENER = build_opener(ProxyHandler({}))
 DEFAULT_T2I = "Qwen-Image-2.1-PE-T2I.Q4_K_M.gguf"
 DEFAULT_EDIT = "Qwen-Image-2.1-PE-I2I.Q4_K_M.gguf"
 DEFAULT_MMPROJ = "Qwen-Image-2.1-PE-I2I.mmproj-bf16.gguf"
+DEFAULT_STARTUP_TIMEOUT = 900
 MAX_VISUAL_PIXELS = 1024 * 1024
 MAX_VISUAL_SIDE = 4096
 _RATIO = re.compile(r"^[1-9]\d{0,2}:[1-9]\d{0,2}$")
@@ -494,7 +495,11 @@ class LocalServer:
                 self.profile = None
                 self.port = None
 
-    def start(self, model, mmproj, context, gpu_layers):
+    def start(self, model, mmproj, context, gpu_layers,
+              startup_timeout=DEFAULT_STARTUP_TIMEOUT):
+        if (isinstance(startup_timeout, bool) or not isinstance(startup_timeout, int)
+                or not 30 <= startup_timeout <= 7200):
+            raise ValueError("startup_timeout must be an integer between 30 and 7200 seconds")
         with self.lock:
             profile = (file_signature(model), file_signature(mmproj) if mmproj else None,
                        context, gpu_layers)
@@ -527,7 +532,10 @@ class LocalServer:
                     check_interrupt = memory.throw_exception_if_processing_interrupted
                 except ImportError:
                     check_interrupt = None
-                deadline = time.monotonic() + 180
+                started_at = time.monotonic()
+                deadline = started_at + startup_timeout
+                next_report = started_at + 30
+                last_health_error = "no successful health response"
                 while time.monotonic() < deadline:
                     if check_interrupt:
                         check_interrupt()
@@ -537,10 +545,21 @@ class LocalServer:
                         with LOCAL_OPENER.open(f"http://127.0.0.1:{port}/health", timeout=3) as response:
                             if response.status == 200:
                                 return
-                    except (URLError, TimeoutError, HTTPError):
-                        pass
-                    time.sleep(0.5)
-                raise TimeoutError("llama-server did not become healthy within 180 seconds")
+                            last_health_error = f"HTTP {response.status}"
+                    except (URLError, TimeoutError, HTTPError) as exc:
+                        last_health_error = str(exc)
+                    now = time.monotonic()
+                    if now >= next_report:
+                        print(f"[Qwen PE T8] Loading {model.name}: waiting for llama-server "
+                              f"({now - started_at:.0f}/{startup_timeout} seconds); see {log_path}",
+                              flush=True)
+                        next_report = now + 30
+                    time.sleep(min(0.5, max(0, deadline - now)))
+                raise TimeoutError(
+                    f"llama-server did not become healthy within {startup_timeout} seconds. "
+                    f"Last health check: {last_health_error}. See {log_path}. "
+                    "If the log still shows model loading, increase the node's startup_timeout; "
+                    "if it shows an error, fix that error first.")
             except BaseException:
                 self.stop()
                 raise

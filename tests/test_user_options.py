@@ -51,18 +51,22 @@ class UserOptionTests(unittest.TestCase):
                             return_value=Path("vision.gguf")),
                       patch("qwen_pe_test_package.pe_nodes.prepare_images",
                             side_effect=prepare_in_order),
-                      patch("qwen_pe_test_package.pe_nodes.SERVER.start"),
+                      patch("qwen_pe_test_package.pe_nodes.SERVER.start") as start,
                       patch("qwen_pe_test_package.pe_nodes.SERVER.complete",
                             return_value=(answer, info)) as complete,
                       patch("qwen_pe_test_package.pe_nodes.SERVER.stop")):
                     _, result, _ = QwenPERewrite().rewrite(
                         "Change the source image to blue.", "auto", "auto", "auto", False,
-                        DEFAULT_T2I, "edit.gguf", "Auto", "after_run", 42, **images)
+                        DEFAULT_T2I, "edit.gguf", "Auto", "after_run", 42,
+                        **({"startup_timeout": 1800} if len(active_ports) == 2 else {}), **images)
                 self.assertEqual(result["task"], "edit")
                 self.assertEqual(result["image_dimensions"], dimensions)
                 self.assertEqual(result["image_input_ports"],
                                  [f"image_{i}" for i in active_ports])
                 self.assertEqual(complete.call_args.args[2], encoded)
+                self.assertEqual(start.call_args.kwargs["startup_timeout"],
+                                 1800 if len(active_ports) == 2 else 900)
+                self.assertEqual(result["startup_timeout"], start.call_args.kwargs["startup_timeout"])
 
     def test_transparent_prompt_uses_selected_language_and_ratio(self):
         chinese = _format_prompt("一只蝴蝶。", True, "zh")

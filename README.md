@@ -85,6 +85,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\download_runtime.ps1
 - `output_language`：`auto`、`中文`、`English`。指定语言时，节点会检查改写结果；必要时使用当前本地模型翻译。语言限制针对**描述文字**；用户指定的引号文字和参考图中可见的英文标题、广告牌、标签等文字会保留原文并加引号。
 - `transparent_rgba`：在最终提示词中加入 RGBA、alpha 通道和透明背景要求。**它控制提示词，不保证下游生成的图片一定带 alpha 通道。**
 - `model_lifetime`：`after_run` 在每次完成或报错后卸载；`keep_loaded` 便于连续调用，之后可接 **PE Unload T8**。
+- `startup_timeout`：等待模型启动的秒数，默认 `900`（15 分钟），范围 `30–7200`。低配置机器或慢硬盘可设为 `1800`（30 分钟）；此项只控制模型加载等待时间。旧工作流未设置时也使用新的 900 秒默认值。
 
 `image_1` 至 `image_10` 每个端口只接一张 IMAGE，不接受批次。输出为 `None` 的端口会跳过，剩余图片按端口顺序连续编号。例如 `image_1` 有图、`image_2` 为 `None`、`image_9` 有图时，前一张是 `<image1>`，后一张是 `<image2>`；`PE_RESULT.image_input_ports` 记录它们原本来自哪些端口。单图编辑可自然描述或使用 `<image1>`；多图编辑的改写结果必须包含全部 `<image1>` 至 `<imageN>`。连接下游 `TextEncodeQwenImage21` 时，务必给它同一批图片、同一顺序。
 
@@ -108,6 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\download_runtime.ps1
 | --- | --- |
 | 模型列表为空或提示找不到 GGUF | 确认模型文件名和目录；可用 **PE Local Models T8** 查看扫描结果。 |
 | `llama-server.exe not found` | 这是缺少独立推理程序，不是缺少模型；按 [Windows 安装步骤](#install-llama-server-windows)下载两个官方 ZIP，解压到节点的 `runtime/llama-b11068/`。 |
+| `llama-server did not become healthy within 180 seconds`，日志仍在加载模型 | 更新到 1.0.14 或更高版本，默认已延长到 900 秒；仍加载较慢时，将 `startup_timeout` 设为 `1800`。等待期间控制台每 30 秒提示一次；检查节点目录的 `runtime/server.log`。若日志有显存不足、缺少 DLL 等错误，应先解决对应错误。连续调用可用 `keep_loaded` 避免重复加载。 |
 | 编辑模式提示缺少 mmproj | 确认 I2I 主模型和视觉文件同目录，或在 `vision_model` 中选择匹配文件。 |
 | `model response reached the generation or context limit` | 节点会关闭思考重试一次；仍失败时查看错误中的 token 用量，减少输入图片或缩短原始要求。多图模式会占用更多显存。 |
 | `model failed format validation` | 模型两次都未返回合规的 JSON、比例、语言或图片编号；查看报错详情。成功运行时可用 `diagnostics` 核对任务及图片端口映射。 |

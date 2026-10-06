@@ -7,7 +7,7 @@ import time
 
 import torch
 
-from .pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, SERVER, file_signature, local_models,
+from .pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_STARTUP_TIMEOUT, SERVER, file_signature, local_models,
                          pick_mmproj, prepare_images, quoted_literals, resolve_model, strip_quoted_literals)
 
 
@@ -68,7 +68,11 @@ class QwenPERewrite:
                 "model_lifetime": (["after_run", "keep_loaded"], {"default": "after_run"}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0x7FFFFFFF}),
             },
-            "optional": images,
+            "optional": {**images, "startup_timeout": ("INT", {
+                "default": DEFAULT_STARTUP_TIMEOUT, "min": 30, "max": 7200, "step": 30,
+                "tooltip": "模型启动等待秒数，默认 900（15 分钟）；加载较慢时可增大。"
+                           " / Model startup timeout in seconds; increase for slow loading.",
+            })},
         }
 
     RETURN_TYPES = ("STRING", "PE_RESULT", "STRING")
@@ -109,7 +113,7 @@ class QwenPERewrite:
 
     def rewrite(self, user_prompt, task, aspect_ratio, output_language, transparent_rgba,
                 t2i_model, edit_model, vision_model,
-                model_lifetime, seed, **kwargs):
+                model_lifetime, seed, startup_timeout=DEFAULT_STARTUP_TIMEOUT, **kwargs):
         if not user_prompt.strip():
             raise ValueError("Enter a text instruction; image-only requests need an explicit editing goal")
         present = sorted((int(key.split("_")[-1]), value) for key, value in kwargs.items() if value is not None)
@@ -136,7 +140,7 @@ class QwenPERewrite:
         started = time.monotonic()
         with SERVER.lock:
             try:
-                SERVER.start(model, mmproj, context, 99)
+                SERVER.start(model, mmproj, context, 99, startup_timeout=startup_timeout)
                 answer, info = SERVER.complete(actual_task, user_prompt, encoded, seed, 900,
                                                output_language, aspect_ratio, transparent_rgba)
             finally:
@@ -169,6 +173,7 @@ class QwenPERewrite:
             "system_prompt_sha256": template_hash,
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "seed": seed,
+            "startup_timeout": startup_timeout,
             "finish_reason": info["finish_reason"],
             "usage": info["usage"],
             "format_retries": info.get("format_retries", 0),
