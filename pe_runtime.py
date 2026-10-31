@@ -96,6 +96,40 @@ def quoted_literals(text, protected_literals=None):
             if _protected_quote(match, protected_literals)]
 
 
+def _protect_translation_literals(prose, protected_literals):
+    """Keep exact lettering and image references out of translation input."""
+    # Use a sentinel absent from all source text, including literal contents.
+    sentinel = next((char for char in ("⟦", "§", "¦", "¤") if char not in prose), None)
+    if sentinel is None:
+        codepoint = 0xE000
+        while chr(codepoint) in prose:
+            codepoint += 1
+        sentinel = chr(codepoint)
+    prefix = sentinel + "QWEN_PE_LITERAL_"
+    literals = {}
+
+    def protect(match):
+        if not _protected_quote(match, protected_literals):
+            return match.group()
+        marker = f"{prefix}{len(literals)}__"
+        literals[marker] = match.group()
+        return marker
+
+    masked = _QUOTED_LITERAL.sub(protect, prose)
+
+    def protect_reference(match):
+        number = re.search(r"\d+", match.group()).group()
+        marker = f"{prefix}IMAGE{number}_{len(literals)}__"
+        literals[marker] = match.group()
+        return marker
+
+    masked = re.sub(r"<image\d+>", protect_reference, masked)
+    # Record immutable spans in source order for translation and reconstruction.
+    marker_pattern = re.compile(re.escape(prefix) + r"(?:IMAGE\d+_)?\d+__")
+    literals = {marker: literals[marker] for marker in marker_pattern.findall(masked)}
+    return masked, literals, prefix
+
+
 def model_roots():
     roots = [ROOT / "models" / "llm" / "qwenimage-pe"]
     extra = os.environ.get("QWEN_PE_MODEL_DIR")
@@ -659,6 +693,10 @@ class LocalServer:
                 raw = choice["message"].get("content") or ""
                 try:
                     answer = parse_answer(raw, task, len(images))
+                    # Remember lettering recognized in this rewrite even if its
+                    # surrounding words change during translation or cleanup.
+                    answer_literals = exact_literals | set(quoted_literals(
+                        answer["rewritten_prompt"], exact_literals))
                     normalized_single_image_tags = 0
                     if task == "edit" and len(images) == 1:
                         answer["rewritten_prompt"], normalized_single_image_tags = (
@@ -666,19 +704,19 @@ class LocalServer:
                     removed_background_sentences = 0
                     if transparent_rgba:
                         answer["rewritten_prompt"], normalized_background_phrases = (
-                            normalize_opaque_background_phrases(answer["rewritten_prompt"], exact_literals))
+                            normalize_opaque_background_phrases(answer["rewritten_prompt"], answer_literals))
                         answer["rewritten_prompt"], removed_background_sentences = (
-                            remove_opaque_background_sentences(answer["rewritten_prompt"], exact_literals))
+                            remove_opaque_background_sentences(answer["rewritten_prompt"], answer_literals))
                         answer["rewritten_prompt"], normalized_margin_phrases = (
-                            normalize_transparent_margins(answer["rewritten_prompt"], exact_literals))
+                            normalize_transparent_margins(answer["rewritten_prompt"], answer_literals))
                     else:
                         normalized_background_phrases = 0
                         normalized_margin_phrases = 0
-                    validate_references(answer, task, len(images), exact_literals)
+                    validate_references(answer, task, len(images), answer_literals)
                     translation_fallback = False
                     translation_usage = None
                     try:
-                        validate_language(answer, output_language, exact_literals)
+                        validate_language(answer, output_language, answer_literals)
                     except ValueError:
                         if output_language == "auto":
                             raise
@@ -690,7 +728,8 @@ class LocalServer:
                                 translated, translation_usage = self._translate_prose(
                                     source_prose, output_language, seed, timeout,
                                     correction=correction,
-                                    temperature=0.0 if translation_attempt == 0 else 0.3)
+                                    temperature=0.0 if translation_attempt == 0 else 0.3,
+                                    protected_literals=answer_literals)
                                 normalized_more_tags = 0
                                 normalized_more_backdrop = 0
                                 removed_more = 0
@@ -699,15 +738,15 @@ class LocalServer:
                                     translated, normalized_more_tags = normalize_single_image_references(translated)
                                 if transparent_rgba:
                                     translated, normalized_more_backdrop = (
-                                        normalize_opaque_background_phrases(translated, exact_literals))
+                                        normalize_opaque_background_phrases(translated, answer_literals))
                                     translated, removed_more = (
-                                        remove_opaque_background_sentences(translated, exact_literals))
+                                        remove_opaque_background_sentences(translated, answer_literals))
                                     translated, normalized_more = (
-                                        normalize_transparent_margins(translated, exact_literals))
+                                        normalize_transparent_margins(translated, answer_literals))
                                 candidate = {**answer, "rewritten_prompt": translated}
-                                validate_references(candidate, task, len(images), exact_literals)
-                                validate_language(candidate, output_language, exact_literals)
-                                validate_mode(candidate, aspect_ratio, transparent_rgba, exact_literals)
+                                validate_references(candidate, task, len(images), answer_literals)
+                                validate_language(candidate, output_language, answer_literals)
+                                validate_mode(candidate, aspect_ratio, transparent_rgba, answer_literals)
                             except ValueError as exc:
                                 if translation_attempt == 2:
                                     raise
@@ -719,7 +758,7 @@ class LocalServer:
                                 removed_background_sentences += removed_more
                                 normalized_margin_phrases += normalized_more
                                 break
-                    validate_mode(answer, aspect_ratio, transparent_rgba, exact_literals)
+                    validate_mode(answer, aspect_ratio, transparent_rgba, answer_literals)
                     return answer, {"finish_reason": choice.get("finish_reason"),
                                     "usage": result.get("usage", {}),
                                     "format_retries": attempt, "first_format_error": first_error,
@@ -744,47 +783,90 @@ class LocalServer:
             raise AssertionError("unreachable")
 
     def _translate_prose(self, prose, output_language, seed, timeout,
-                         correction=None, temperature=0.0):
-        target = "Simplified Chinese" if output_language == "中文" else "English"
-        if output_language == "中文":
-            request_text = (
-                "把以下图像生成提示词逐句忠实翻译成简体中文，只输出译文，不要标题、JSON 或解释。"
-                "描述部分禁止任何英文字母；仅 <imageN> 标签、数字、引号内原文、RGBA 和 alpha 可以保留英文。"
-                "不得新增或删除视觉事实，不得更改图片编号和引号内需要呈现的文字。\n\n" + prose)
+                         correction=None, temperature=0.0, protected_literals=None):
+        masked_prose, literals, prefix = _protect_translation_literals(prose, protected_literals)
+        english = output_language == "English"
+        example_image = f"{prefix}IMAGE1_0__"
+        example_title = f"{prefix}1__"
+        example_en = (f"Brighten {example_image} while keeping the title {example_title}. "
+                      "Use a red background.")
+        example_zh = f"调亮{example_image}，保留标题{example_title}，背景为红色。"
+        if english:
+            translation_system = (
+                "Translate the input prose faithfully into English. Do not expand or rewrite it. "
+                "Preserve every protected placeholder in order. Translate ordinary descriptive "
+                "phrases inside quotation marks too. Return JSON with only translated_prose.")
+            example_source, example_target = example_zh, example_en
         else:
-            request_text = (
-                f"Translate the following image-generation prompt faithfully into {target}. "
-                "Do not add or remove visual facts. Keep every <imageN> tag and every exact "
-                "quoted string unchanged. Return only plain translated prose, with no heading, "
-                "JSON, or explanation.\n\n" + prose)
+            translation_system = (
+                "把输入文字忠实翻译成简体中文，不得改写、扩写或添加视觉事实。"
+                "普通描述性引号内的文字也要翻译。保持所有受保护占位符原样和顺序，"
+                "占位符、RGBA、alpha、2D、3D 之外的描述不得保留英文单词。"
+                "只返回 JSON 对象，唯一字段为 translated_prose。")
+            example_source, example_target = example_en, example_zh
+        string_schema = {"type": "string", "minLength": 1}
+        if literals:
+            # The sentinel is absent from the source. Only the fixed markers may
+            # contain it, so constrained decoding cannot drop or duplicate them.
+            gap = f"[^{re.escape(prefix[0])}]*"
+            string_schema["pattern"] = "^" + gap.join(
+                [""] + [re.escape(marker) for marker in literals] + [""]) + "$"
+        request_text = masked_prose
         if correction:
             request_text = (
-                "上次译文未通过校验，请修正后重新翻译原文。错误：" + correction[:500] + "\n\n"
-                if output_language == "中文" else
-                "The previous translation failed validation. Fix this error and retranslate "
-                "the original text: " + correction[:500] + "\n\n"
+                "上次译文未通过校验，请重新忠实翻译原文。错误：" + correction[:500] + "\n\n"
+                if not english else
+                "The previous translation failed validation. Retranslate the original faithfully. "
+                "Error: " + correction[:500] + "\n\n"
             ) + request_text
         payload = {
             "model": "qwen-pe",
-            "messages": [{"role": "system", "content": "你是严格忠实的图像提示词翻译编辑。只执行翻译。" if output_language == "中文" else
-                         "You are a faithful translation editor for image prompts."},
+            "messages": [{"role": "system", "content": translation_system},
+                         {"role": "user", "content": example_source},
+                         {"role": "assistant", "content": json.dumps(
+                             {"translated_prose": example_target}, ensure_ascii=False)},
                          {"role": "user", "content": request_text}],
             "temperature": temperature, "top_p": 0.9, "max_tokens": 8192,
             "seed": seed, "chat_template_kwargs": {"enable_thinking": False}, "stream": False,
+            # Qwen still emits empty thinking delimiters when thinking is off.
+            # Parse them separately so they cannot conflict with JSON decoding.
+            "reasoning_format": "auto",
+            "response_format": {"type": "json_object", "schema": {
+                "type": "object", "properties": {"translated_prose": string_schema},
+                "required": ["translated_prose"], "additionalProperties": False}},
         }
         result = self._post_completion(payload, timeout)
         choice = result["choices"][0]
         if choice.get("finish_reason") == "length":
             raise ValueError("translation fallback was truncated")
-        translated = choice["message"].get("content") or ""
-        translated = re.sub(r"^\s*<think>[\s\S]*?</think>\s*", "", translated)
-        translated = re.sub(r"(?m)^\s*#{1,6}\s*", "", translated).strip()
-        required_quotes = quoted_literals(prose)
-        actual_quotes = quoted_literals(translated)
-        if actual_quotes != required_quotes:
-            raise ValueError("translation changed the order or content of exact quoted image text")
+        raw = choice["message"].get("content") or ""
+        raw = re.sub(r"^\s*<think>[\s\S]*?</think>\s*", "", raw).strip()
+        if raw.startswith("```json\n") and raw.endswith("```"):
+            raw = raw[8:-3].strip()
+        try:
+            response = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("translation fallback did not return a translated_prose JSON object") from exc
+        if (not isinstance(response, dict) or set(response) != {"translated_prose"}
+                or not isinstance(response["translated_prose"], str)):
+            raise ValueError("translation fallback must return exactly one translated_prose string")
+        translated = response["translated_prose"].strip()
         if not translated:
             raise ValueError("translation fallback returned empty text")
+        if literals:
+            if not re.fullmatch(string_schema["pattern"], translated):
+                raise ValueError("translation must preserve every protected text marker exactly once and in order")
+            # Tolerate a model wrapping a marker in quotes; restore the original
+            # complete quoted span instead of producing doubled quotation marks.
+            translated = _QUOTED_LITERAL.sub(
+                lambda match: match.group()[1:-1].strip()
+                if match.group()[1:-1].strip() in literals else match.group(), translated)
+            marker_pattern = re.compile(re.escape(prefix) + r"(?:IMAGE\d+_)?\d+__")
+            translated = marker_pattern.sub(lambda match: literals[match.group()], translated)
+        if prefix[0] in translated:
+            raise ValueError("translation returned an invalid protected text marker")
+        if quoted_literals(translated, protected_literals) != quoted_literals(prose, protected_literals):
+            raise ValueError("translation changed the order or content of exact quoted image text")
         return translated, result.get("usage", {})
 
     def _post_completion(self, payload, timeout):

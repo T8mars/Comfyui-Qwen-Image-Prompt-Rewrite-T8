@@ -89,6 +89,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\download_runtime.ps1
 
 `image_1` 至 `image_10` 每个端口只接一张 IMAGE，不接受批次。输出为 `None` 的端口会跳过，剩余图片按端口顺序连续编号。例如 `image_1` 有图、`image_2` 为 `None`、`image_9` 有图时，前一张是 `<image1>`，后一张是 `<image2>`；`PE_RESULT.image_input_ports` 记录它们原本来自哪些端口。单图编辑可自然描述或使用 `<image1>`；多图编辑的改写结果必须包含全部 `<image1>` 至 `<imageN>`。连接下游 `TextEncodeQwenImage21` 时，务必给它同一批图片、同一顺序。
 
+切换输出语言会翻译场景、动作和风格等描述，不会自动翻译画面内的标题、招牌或标签。1.0.15 起，补译前由代码暂存画面文字和 `<imageN>` 图片编号，使用受保护占位符代替；补译请求通过 llama.cpp 的 JSON 格式约束固定占位符的数量和顺序，补译后由代码恢复原文、引号和编号。改写稿中由模型自行加引号的普通描述性短语仍会翻译；`auto` 不执行语言补译。
+
 ## 示例工作流
 
 把 [workflows/](workflows/) 中的 JSON 拖入 ComfyUI，或放进 ComfyUI 的工作流目录。建议从以下文件开始：
@@ -116,6 +118,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\download_runtime.ps1
 | `llama-server did not become healthy`，但日志显示已监听 | 更新到 1.0.11 或更高版本；本地健康检查和推理请求会绕过 `HTTP_PROXY`/`HTTPS_PROXY`。旧版可临时设置 `NO_PROXY=127.0.0.1,localhost`。 |
 | 中文输出报 `Chinese descriptive prose contains English words` | 更新到 1.0.11 或更高版本；翻译回退现在会根据残留英文词反馈再试。若仍失败，查看错误中的词及 `diagnostics`。 |
 | 选择中文时，参考图里的英文标题或广告牌文字触发语言校验错误 | 更新到 1.0.13 或更高版本；图中可见文字可保留原文，普通描述仍须使用中文。 |
+| 切换中英文后报 `translation changed the order or content of exact quoted image text` | 更新到 1.0.15 或更高版本并重启 ComfyUI。补译时保护画面文字和图片编号，通过格式约束避免占位符丢失、重复或乱序，再由代码恢复原文。普通描述性引号不再一律锁定，译文仍会检查目标语言和图片引用。 |
 | 找不到 `TextEncodeQwenImage21` | 更新到支持 Qwen Image 2.1 的 ComfyUI；纯改写示例不需要该节点。 |
 | 透明图最终仍是不透明 PNG | 检查下游图像模型、VAE 和保存流程；PE 节点只生成透明图提示词。 |
 

@@ -89,6 +89,8 @@ Enter your instruction in `user_prompt` and choose the following options in **PE
 
 Each `image_1` through `image_10` input accepts one IMAGE, not a batch. Inputs returning `None` are skipped; remaining images are numbered in port order. For example, if `image_1` has an image, `image_2` is `None`, and `image_9` has an image, their prompt references are `<image1>` and `<image2>`. `PE_RESULT.image_input_ports` records the original ports. A single-image rewrite may describe the image naturally or use `<image1>`; a multi-image rewrite must include every tag from `<image1>` through `<imageN>`. If you connect the output to `TextEncodeQwenImage21`, give that node the same images in the same order.
 
+The output language controls descriptions of the scene, actions, and style; it does not automatically translate lettering inside the image. Since 1.0.15, code saves exact titles, signs, labels, and `<imageN>` references and replaces them with protected placeholders. llama.cpp JSON constraints fix the count and order of those placeholders during translation; code then restores the original text, quotation marks, and reference tags. Ordinary descriptive phrases quoted by the model itself are still translated. `auto` skips language translation fallback.
+
 ## Example workflows
 
 Drag a JSON file from [workflows/](workflows/) onto the ComfyUI canvas, or place it in your ComfyUI workflows directory. Start with one of these:
@@ -116,6 +118,7 @@ The directory also has Heretic text-to-image, Chinese and English transparency, 
 | `llama-server did not become healthy` although the log shows it listening | Update to version 1.0.11 or later; local health checks and inference bypass `HTTP_PROXY`/`HTTPS_PROXY`. On older versions, `NO_PROXY=127.0.0.1,localhost` is a temporary workaround. |
 | Chinese output reports `Chinese descriptive prose contains English words` | Update to version 1.0.11 or later; translation fallback now retries with feedback about the remaining English words. If it still fails, inspect the reported words and `diagnostics`. |
 | Chinese output fails language validation on an English title or sign in an input image | Update to version 1.0.13 or later; visible image text can remain verbatim while the surrounding description stays Chinese. |
+| Switching languages fails with `translation changed the order or content of exact quoted image text` | Update to 1.0.15 or later and restart ComfyUI. Translation protects image lettering and reference tags, constrains placeholders against omission, duplication, or reordering, and restores originals in code. Ordinary descriptive quotes are no longer all locked. Target language and image references are still validated. |
 | `TextEncodeQwenImage21` is missing | Update to a ComfyUI release supporting Qwen Image 2.1. Prompt-only workflows do not need this node. |
 | The output PNG is still opaque | Check the downstream image model, VAE, and saving workflow. This node only writes the transparency prompt. |
 

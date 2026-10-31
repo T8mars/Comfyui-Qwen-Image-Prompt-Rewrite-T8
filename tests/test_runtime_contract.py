@@ -23,6 +23,11 @@ from pe_runtime import (DEFAULT_EDIT, DEFAULT_T2I, DEFAULT_MMPROJ, LOCAL_OPENER,
                         validate_references)
 
 
+def translation_result(text, usage=None):
+    return {"choices": [{"message": {"content": json.dumps({"translated_prose": text})},
+                         "finish_reason": "stop"}], "usage": usage or {}}
+
+
 class RuntimeContractTests(unittest.TestCase):
     def test_slow_startup_can_finish_after_old_180_second_limit(self):
         import pe_runtime
@@ -490,38 +495,134 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(info["normalized_single_image_tags"], 1)
         self.assertEqual(info["format_retries"], 0)
 
-    def test_translation_requires_exact_text_to_remain_quoted(self):
+    def test_translation_restores_exact_text_without_model_copying_it(self):
         server = LocalServer()
-        result = {"choices": [{"message": {"content":
-                  "HELLO appears elsewhere; the sign says 'GOODBYE'."},
-                  "finish_reason": "stop"}], "usage": {}}
-        with patch.object(server, "_post_completion", return_value=result):
-            with self.assertRaisesRegex(ValueError, "quoted image text"):
-                server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
-        result["choices"][0]["message"]["content"] = '"HELLO" appears elsewhere; the sign says "GOODBYE".'
-        with patch.object(server, "_post_completion", return_value=result):
-            with self.assertRaisesRegex(ValueError, "quoted image text"):
-                server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
-        result["choices"][0]["message"]["content"] = 'The sign says "HELLO".'
-        with patch.object(server, "_post_completion", return_value=result):
+        result = translation_result('The sign says "⟦QWEN_PE_LITERAL_0__".')
+        with patch.object(server, "_post_completion", return_value=result) as completion:
             translated, _ = server._translate_prose("A sign says 'HELLO'.", "English", 42, 1)
-        self.assertEqual(translated, 'The sign says "HELLO".')
+        self.assertEqual(translated, "The sign says 'HELLO'.")
+        payload = completion.call_args.args[0]
+        self.assertNotIn("HELLO", payload["messages"][-1]["content"])
+        self.assertEqual(payload["reasoning_format"], "auto")
+        schema = payload["response_format"]["schema"]["properties"]["translated_prose"]
+        self.assertRegex('The sign says ⟦QWEN_PE_LITERAL_0__.', schema["pattern"])
+        self.assertNotRegex('The sign says HELLO.', schema["pattern"])
+
+    def test_translation_hides_literal_content_and_restores_original_quotes(self):
+        server = LocalServer()
+        source = '保留标题“你好”和标签「DON\'T STOP」，下方再写“你好”。'
+        template = ('Keep the title ⟦QWEN_PE_LITERAL_0__ and the label '
+                    '⟦QWEN_PE_LITERAL_1__, then repeat ⟦QWEN_PE_LITERAL_2__ below.')
+        with patch.object(server, "_post_completion",
+                          return_value=translation_result(template, usage={"completion_tokens": 23})) as completion:
+            translated, usage = server._translate_prose(source, "English", 42, 1)
+        request = completion.call_args.args[0]["messages"][-1]["content"]
+        self.assertNotIn("你好", request)
+        self.assertNotIn("DON'T STOP", request)
+        self.assertEqual(quoted_literals(translated), ["你好", "DON'T STOP", "你好"])
+        self.assertIn('“你好”', translated)
+        self.assertIn('「DON\'T STOP」', translated)
+        self.assertNotIn("QWEN_PE_LITERAL_", translated)
+        self.assertEqual(usage, {"completion_tokens": 23})
+
+    def test_translation_rejects_missing_duplicate_reordered_or_unknown_markers(self):
+        server = LocalServer()
+        source = '保留标题“你好”和标签“世界”。'
+        bad_outputs = (
+            'Keep ⟦QWEN_PE_LITERAL_0__.',
+            'Keep ⟦QWEN_PE_LITERAL_0__ and ⟦QWEN_PE_LITERAL_0__ and ⟦QWEN_PE_LITERAL_1__.',
+            'Keep ⟦QWEN_PE_LITERAL_1__ and ⟦QWEN_PE_LITERAL_0__.',
+            'Keep ⟦QWEN_PE_LITERAL_0__ and ⟦QWEN_PE_LITERAL_1__ and ⟦QWEN_PE_LITERAL_2__.',
+            'Keep ⟦QWEN_PE_LITERAL_0__ and ⟦QWEN_PE_LITERAL_1__ and ⟦broken__.',
+            'Keep "HELLO" and "WORLD".',
+        )
+        for text in bad_outputs:
+            with self.subTest(text=text), patch.object(server, "_post_completion",
+                                                       return_value=translation_result(text)):
+                with self.assertRaisesRegex(ValueError, "protected text marker"):
+                    server._translate_prose(source, "English", 42, 1)
+
+    def test_translation_rejects_bad_json_shape_and_empty_output(self):
+        server = LocalServer()
+        for value in ("not JSON", "[]", '{"translated_prose": 7}',
+                      '{"translated_prose": "", "extra": true}', '{"translated_prose": ""}'):
+            result = {"choices": [{"message": {"content": value}, "finish_reason": "stop"}]}
+            with self.subTest(value=value), patch.object(server, "_post_completion", return_value=result):
+                with self.assertRaises(ValueError):
+                    server._translate_prose("一只猫。", "English", 42, 1)
+
+    def test_translation_does_not_preserve_ordinary_descriptive_quotes(self):
+        server = LocalServer()
+        source = '采用“柔和温暖”的光线，标题写着“你好”。'
+        result = translation_result('Use "soft and warm" lighting, with the title ⟦QWEN_PE_LITERAL_0__.')
+        with patch.object(server, "_post_completion", return_value=result) as completion:
+            translated, _ = server._translate_prose(source, "English", 42, 1, protected_literals=set())
+        request = completion.call_args.args[0]["messages"][-1]["content"]
+        self.assertIn("柔和温暖", request)
+        self.assertNotIn("你好", request)
+        self.assertEqual(translated, 'Use "soft and warm" lighting, with the title “你好”.')
+        validate_language({"rewritten_prompt": translated}, "English", {"你好"})
+
+    def test_translation_marker_cannot_collide_with_user_text(self):
+        server = LocalServer()
+        source = '写上“⟦QWEN_PE_LITERAL_0__”和“你好”。'
+        result = translation_result('Write §QWEN_PE_LITERAL_0__ and §QWEN_PE_LITERAL_1__.')
+        with patch.object(server, "_post_completion", return_value=result):
+            translated, _ = server._translate_prose(source, "English", 42, 1)
+        self.assertEqual(translated, 'Write “⟦QWEN_PE_LITERAL_0__” and “你好”.')
+
+    def test_translation_preserves_underscores_and_nonliteral_quoted_style(self):
+        server = LocalServer()
+        result = translation_result('Use "soft_light" with the title ⟦QWEN_PE_LITERAL_0__.')
+        with patch.object(server, "_post_completion", return_value=result):
+            translated, _ = server._translate_prose(
+                '使用“soft_light”风格，标题为“你好”。', "English", 42, 1, protected_literals={"你好"})
+        self.assertEqual(translated, 'Use "soft_light" with the title “你好”.')
+
+    def test_english_edit_translation_preserves_two_images_and_ocr_literals(self):
+        server = LocalServer()
+        base = {"rewritten_prompt": '把<image1>的标题“春日”和<image2>的标签「你好」保留，调亮画面。',
+                "wh_ratio": "", "ratio_follow": "<image1>"}
+        responses = [{"choices": [{"message": {"content": json.dumps(base)}, "finish_reason": "stop"}]},
+                     translation_result('Keep ⟦QWEN_PE_LITERAL_IMAGE1_2__ with the title ⟦QWEN_PE_LITERAL_0__ '
+                                        'and ⟦QWEN_PE_LITERAL_IMAGE2_3__ with the label ⟦QWEN_PE_LITERAL_1__. '
+                                        'Brighten both images.')]
+        with patch.object(server, "_post_completion", side_effect=responses) as completion:
+            answer, info = server.complete("edit", "请保留文字，调亮两张图。",
+                                           ["image-one", "image-two"], 42, 1, output_language="English")
+        self.assertEqual(completion.call_count, 2)
+        self.assertIn('“春日”', answer["rewritten_prompt"])
+        self.assertIn('「你好」', answer["rewritten_prompt"])
+        self.assertEqual(answer["ratio_follow"], "<image1>")
+        self.assertEqual(info["format_retries"], 0)
+        self.assertTrue(info["translation_fallback"])
+
+    def test_translation_retries_missing_marker_without_regenerating_prompt(self):
+        server = LocalServer()
+        base = {"rewritten_prompt": '一张柔和灯光的海报，标题是“春日”。', "wh_ratio": "9:16"}
+        responses = [{"choices": [{"message": {"content": json.dumps(base)}, "finish_reason": "stop"}]},
+                     translation_result('A softly lit poster with the title "Spring".'),
+                     translation_result('A softly lit poster with the title ⟦QWEN_PE_LITERAL_0__.')]
+        with patch.object(server, "_post_completion", side_effect=responses) as completion:
+            answer, info = server.complete("t2i", '海报上写“春日”。', [], 42, 1,
+                                           output_language="English", aspect_ratio="9:16")
+        self.assertEqual(completion.call_count, 3)
+        self.assertEqual(answer["rewritten_prompt"], 'A softly lit poster with the title “春日”.')
+        self.assertEqual(info["format_retries"], 0)
+        request = completion.call_args.args[0]["messages"][-1]["content"]
+        self.assertIn("protected text marker", request)
+        self.assertNotIn("春日", request)
 
     def test_chinese_translation_repairs_residual_english_before_format_retry(self):
         server = LocalServer()
-        base = {"rewritten_prompt": "A muted red desk lamp with a fitted lid.",
-                "wh_ratio": "1:1"}
+        base = {"rewritten_prompt": "A muted red desk lamp with a fitted lid.", "wh_ratio": "1:1"}
         responses = [
-            {"choices": [{"message": {"content": json.dumps(base)},
-                          "finish_reason": "stop"}], "usage": {}},
-            {"choices": [{"message": {"content": "一盏 muted red 台灯，带 fitted lid。"},
-                          "finish_reason": "stop"}], "usage": {}},
-            {"choices": [{"message": {"content": "一盏柔和的红色台灯，带贴合的盖子。"},
-                          "finish_reason": "stop"}], "usage": {"completion_tokens": 17}},
+            {"choices": [{"message": {"content": json.dumps(base)}, "finish_reason": "stop"}], "usage": {}},
+            translation_result("一盏 muted red 台灯，带 fitted lid。"),
+            translation_result("一盏柔和的红色台灯，带贴合的盖子。", usage={"completion_tokens": 17}),
         ]
         with patch.object(server, "_post_completion", side_effect=responses) as completion:
-            answer, info = server.complete("t2i", "A muted red desk lamp with a fitted lid.",
-                                           [], 42, 1, output_language="中文")
+            answer, info = server.complete("t2i", base["rewritten_prompt"], [], 42, 1, output_language="中文")
         self.assertEqual(completion.call_count, 3)
         self.assertEqual(answer["rewritten_prompt"], "一盏柔和的红色台灯，带贴合的盖子。")
         self.assertEqual(info["format_retries"], 0)
@@ -529,19 +630,16 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(info["translation_usage"], {"completion_tokens": 17})
         second_translation = completion.call_args_list[2].args[0]
         self.assertEqual(second_translation["temperature"], 0.3)
-        self.assertIn("muted", second_translation["messages"][1]["content"])
-        self.assertIn(base["rewritten_prompt"], second_translation["messages"][1]["content"])
+        self.assertIn("muted", second_translation["messages"][-1]["content"])
+        self.assertIn(base["rewritten_prompt"], second_translation["messages"][-1]["content"])
 
     def test_chinese_edit_preserves_english_sign_read_from_image(self):
         server = LocalServer()
         original = {"rewritten_prompt": "Brighten <image1> while preserving the billboard title "
                     "'SUMMER SALE' exactly.", "wh_ratio": "", "ratio_follow": "<image1>"}
         responses = [
-            {"choices": [{"message": {"content": json.dumps(original)},
-                          "finish_reason": "stop"}], "usage": {}},
-            {"choices": [{"message": {"content":
-                          "调亮<image1>的画面，同时原样保留广告牌标题'SUMMER SALE'。"},
-                          "finish_reason": "stop"}], "usage": {}},
+            {"choices": [{"message": {"content": json.dumps(original)}, "finish_reason": "stop"}], "usage": {}},
+            translation_result("调亮⟦QWEN_PE_LITERAL_IMAGE1_1__的画面，同时原样保留广告牌标题⟦QWEN_PE_LITERAL_0__。"),
         ]
         with patch.object(server, "_post_completion", side_effect=responses) as completion:
             answer, info = server.complete("edit", "请调亮画面并保留招牌内容。",
@@ -550,6 +648,26 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("'SUMMER SALE'", answer["rewritten_prompt"])
         self.assertEqual(info["format_retries"], 0)
         self.assertTrue(info["translation_fallback"])
+
+    def test_translation_restores_repeated_and_tenth_image_tags(self):
+        server = LocalServer()
+        source = "Move <image10> beside <image1>, then brighten <image10>."
+        result = translation_result(
+            "把⟦QWEN_PE_LITERAL_IMAGE10_0__放在⟦QWEN_PE_LITERAL_IMAGE1_1__旁边，然后调亮⟦QWEN_PE_LITERAL_IMAGE10_2__。")
+        with patch.object(server, "_post_completion", return_value=result) as completion:
+            translated, _ = server._translate_prose(source, "中文", 42, 1, protected_literals=set())
+        request = completion.call_args.args[0]["messages"][-1]["content"]
+        self.assertNotIn("<image10>", request)
+        self.assertNotIn("<image1>", request)
+        self.assertEqual(translated, "把<image10>放在<image1>旁边，然后调亮<image10>。")
+
+    def test_truncated_translation_cannot_return_partial_text(self):
+        server = LocalServer()
+        result = translation_result("Keep the title ⟦QWEN_PE_LITERAL_0__.")
+        result["choices"][0]["finish_reason"] = "length"
+        with patch.object(server, "_post_completion", return_value=result):
+            with self.assertRaisesRegex(ValueError, "translation fallback was truncated"):
+                server._translate_prose('保留标题“你好”。', "English", 42, 1)
 
     def test_loopback_health_and_completion_bypass_environment_proxy(self):
         class Handler(BaseHTTPRequestHandler):
